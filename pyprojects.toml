@@ -1,0 +1,37 @@
+# pyproject.toml
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "milo-assistant"
+version = "0.0.1"
+authors = [
+  { name="Team M.I.L.O", email="kumaresk002@example.com" },
+]
+description = "An offline, privacy-first personal assistant."
+readme = "README.md"
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+
+# Dependencies are listed here
+dependencies = [
+    "vosk",
+    "sounddevice",
+    "pyttsx3",
+    "pvporcupine",
+    "rasa",
+    "pandas",
+    "SQLAlchemy",
+    "pure-python-adb",
+    "zeroconf",
+    "Flask",
+    "bcrypt",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/kuman002/M.I.L.O"
