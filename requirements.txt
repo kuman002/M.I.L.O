@@ -1,40 +1,14 @@
-# M.I.L.O. Project Dependencies
-# Install all libraries using the command: pip install -r requirements.txt
-
-# --- Voice & Audio Interaction ---
-# For Speech-to-Text (STT) and microphone access
+psycopg2-binary==2.9.9
 vosk
 sounddevice
-
-# For Text-to-Speech (TTS)
+numpy
 pyttsx3
-
-# For offline Wake Word detection ("Hey M.I.L.O.")
 pvporcupine
-
-# --- Natural Language Understanding (NLU) ---
-# The core Rasa framework for intent and entity recognition
 rasa
-
-# --- Data Analysis & Management ---
-# For data manipulation and analysis in finance_analyzer and pattern_finder
 pandas
-
-# ORM for cleaner, more robust interaction with the SQLite databases
 SQLAlchemy
-
-# --- Device & Hardware Control ---
-# For communicating with the Android phone via ADB
-# Using pure-python-adb for its simplicity and lack of external dependencies
 pure-python-adb
-
-# For discovering and controlling local network IoT devices (like smart plugs)
-# Note: A device-specific library (e.g., pytuya) might be needed later
 zeroconf
-
-# --- Web Server & Security ---
-# For the local server that communicates with the Android companion app
 Flask
-
-# For securely hashing the conversational passphrase
+requests
 bcrypt
