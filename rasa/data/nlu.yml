@@ -1,0 +1,49 @@
+# rasa/data/nlu.yml
+version: "3.1"
+
+nlu:
+- intent: greet
+  examples: |
+    - hey
+    - hello
+    - hi
+    - hello there
+    - good morning
+    - good evening
+    - hey milo
+
+- intent: goodbye
+  examples: |
+    - bye
+    - goodbye
+    - see you later
+    - stop
+    - shut down
+    - exit
+
+- intent: open_app
+  examples: |
+    - open whatsapp
+    - launch instagram
+    - start google
+    - can you open youtube
+    - please run whatsapp
+    - open the browser
+    - start chrome
+    - open camera
+
+- intent: check_battery
+  examples: |
+    - how is the battery
+    - check phone battery
+    - battery level
+    - battery status
+    - what is the charge
+
+- intent: log_expense
+  examples: |
+    - log expense 50 for food
+    - spent 20 dollars on taxi
+    - add expense 100 for groceries
+    - log 500 for rent
+    - i just bought lunch for 15
