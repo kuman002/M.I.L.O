@@ -1,0 +1,14 @@
+PyQt5>=5.15.0
+pyttsx3>=2.90
+openai-whisper
+torch
+torchaudio
+SpeechRecognition>=3.10.0
+pyaudio>=0.2.14
+python-dateutil>=2.8.2
+pandas>=2.0.0
+pywin32>=306; sys_platform == 'win32'
+sqlite3-binary>=0.1.0; sys_platform == 'linux'
+sounddevice
+numpy
+
