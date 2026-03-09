@@ -1,273 +1,246 @@
 """
-Text-to-Speech Module for MILO
-Handles offline text-to-speech using pyttsx3
+MILO TTS — Stable Optimized Version
+Fixes: double speech + silence bug
 """
 
 import pyttsx3
 import threading
 import queue
+import time
+import sys
+import re
+from dataclasses import dataclass
 from typing import Optional
+
+# ========= PRECOMPILED =========
+EMOJI_PATTERN = re.compile(r'[\U0001F300-\U0001F9FF]')
+CLEANUP_PATTERN = re.compile(r'[^\w\s\.\,\!\?\-\:\;]')
+SPACES_PATTERN = re.compile(r'\s+')
+
+CHAR_REPLACEMENTS = str.maketrans({
+    '$': 'dollar ', '€': 'euro ', '£': 'pound ', '₹': 'rupee ',
+    '/': ' or ', '\\': ' backslash ', '_': ' ', '-': ' '
+})
+
+
+@dataclass(slots=True)
+class SpeakItem:
+    text: str
+    done: Optional[threading.Event] = None
 
 
 class TextToSpeech:
-    """Offline text-to-speech using pyttsx3"""
-    
     def __init__(self):
-        """Initialize TTS engine"""
         self.engine = None
         self.is_speaking = False
+
+        self._queue: queue.Queue[Optional[SpeakItem]] = queue.Queue()
+        self._stop_event = threading.Event()
+
         self._last_spoken = ""
         self._last_spoken_at = 0.0
-        self._queue: "queue.Queue[Optional[str]]" = queue.Queue()
-        self._stop_event = threading.Event()
-        self._engine_lock = threading.Lock()
-        self._worker = threading.Thread(target=self._worker_loop, daemon=True)
+
+        self._is_windows = sys.platform == "win32"
+        self._reinit_each_utterance = self._is_windows
+        self._worker: Optional[threading.Thread] = None
+        self._start_worker()
+
+    def _start_worker(self):
+        if self._worker and self._worker.is_alive():
+            return
+        self._stop_event.clear()
+        self._worker = threading.Thread(
+            target=self._worker_loop,
+            name="MILO-TTS",
+            daemon=True
+        )
         self._worker.start()
-    
+
+    # ========= ENGINE =========
     def _init_engine(self):
-        """Initialize pyttsx3 engine"""
+        """Init ONLY inside worker thread"""
+        if self.engine:
+            return
+
         try:
-            # On Windows, force SAPI5 driver (most stable).
-            # Other OSes will ignore/handle accordingly.
-            try:
+            if self._is_windows:
                 self.engine = pyttsx3.init(driverName="sapi5")
-            except (TypeError, Exception) as e:
-                # Older pyttsx3 versions may not accept driverName kwarg
-                # or SAPI5 not available, try default
-                try:
-                    self.engine = pyttsx3.init()
-                except Exception:
-                    pass
-            
-            if not self.engine:
-                print("Warning: TTS engine initialization failed")
-                return
-            
-            # Set voice properties
-            try:
-                voices = self.engine.getProperty('voices')
-                if voices:
-                    # Try to set a female voice if available, else use first available
-                    for voice in voices:
-                        if 'female' in voice.name.lower() or 'zira' in voice.name.lower():
-                            self.engine.setProperty('voice', voice.id)
-                            break
-                    else:
-                        self.engine.setProperty('voice', voices[0].id)
-            except Exception as e:
-                print(f"Warning: Could not set voice: {e}")
-            
-            # Set speech rate - optimized for clarity
-            self.engine.setProperty('rate', 140)
-            
-            # Set volume - full volume for better audibility
-            self.engine.setProperty('volume', 1.0)
-            
+            else:
+                self.engine = pyttsx3.init()
+
+            voices = self.engine.getProperty("voices") or []
+            for v in voices:
+                n = v.name.lower()
+                if "zira" in n or "female" in n:
+                    self.engine.setProperty("voice", v.id)
+                    break
+
+            self.engine.setProperty("rate", 155)
+            self.engine.setProperty("volume", 1.0)
+
         except Exception as e:
-            print(f"Warning: Could not initialize TTS engine: {e}")
+            print(f"[TTS] init failed: {e}")
             self.engine = None
-    
+
     def is_available(self) -> bool:
-        """Check if TTS is available"""
-        # We assume it's available if the worker is running
         return self._worker.is_alive()
-    
+
+    # ========= PUBLIC =========
     def speak(self, text: str, wait: bool = False):
-        """
-        Speak text
-        
-        Args:
-            text: Text to speak
-            wait: If True, block until speech completes
-        """
-        if not text or not text.strip():
+        if not text:
             return
 
         text = text.strip()
-
-        # Skip rapid duplicate messages (simple debounce)
-        now = time.time()
-        if text == self._last_spoken and (now - self._last_spoken_at) < 2.0:
+        if not text:
             return
+
+        now = time.time()
+        if text == self._last_spoken and now - self._last_spoken_at < 2:
+            return
+
+        # Auto-recover if worker died after a TTS engine error
+        if not self._worker or not self._worker.is_alive():
+            print("[TTS] Worker was not alive. Restarting...")
+            self.engine = None
+            self._start_worker()
+
         self._last_spoken = text
         self._last_spoken_at = now
-        
+
+        evt = threading.Event() if wait else None
+        self._queue.put(SpeakItem(text, evt))
+
         if wait:
-            # For blocking mode, queue the text and wait for completion
-            done_event = threading.Event()
-            self._queue.put(text)
-            self._queue.put(("__MILO_TTS_DONE__", done_event))  # type: ignore[arg-type]
-            done_event.wait(timeout=30)
-        else:
-            # For non-blocking mode, just queue the text
-            self._queue.put(text)
-    
+            evt.wait(30)
+
     def stop(self):
-        """Stop current speech"""
-        # Best-effort: clear queued items and stop engine
-        try:
-            while True:
+        """Stop current speech and clear queue safely"""
+        while not self._queue.empty():
+            try:
                 self._queue.get_nowait()
-        except queue.Empty:
-            pass
+            except queue.Empty:
+                break
 
-        with self._engine_lock:
-            if self.engine:
-                try:
-                    self.engine.stop()
-                except Exception as e:
-                    print(f"Error stopping TTS: {e}")
-        self.is_speaking = False
-    
-    def set_rate(self, rate: int):
-        """Set speech rate (words per minute, default 150)"""
-        with self._engine_lock:
-            if self.engine:
-                self.engine.setProperty('rate', rate)
-    
-    def set_volume(self, volume: float):
-        """Set volume (0.0 to 1.0)"""
-        with self._engine_lock:
-            if self.engine:
-                self.engine.setProperty('volume', max(0.0, min(1.0, volume)))
-
-    def test_speech(self) -> bool:
-        """
-        Test if TTS is working by speaking a test message
-        
-        Returns:
-            True if test speech completed successfully, False otherwise
-        """
-        try:
-            self.speak("Test message", wait=True)
-            return True
-        except Exception as e:
-            print(f"TTS test failed: {e}")
-            return False
+        if self.engine and self.is_speaking:
+            try:
+                self.engine.stop()
+            except Exception:
+                pass
 
     def shutdown(self):
-        """Shutdown the TTS worker thread."""
         self._stop_event.set()
         self._queue.put(None)
-    
-    def _clean_text(self, text: str) -> str:
-        """
-        Clean text for better speech synthesis
-        
-        Args:
-            text: Raw text to clean
-            
-        Returns:
-            Cleaned text optimized for TTS
-        """
-        import re
-        
-        # Remove emoji and special characters that might cause issues
-        text = re.sub(r'[\U0001F300-\U0001F9FF]', '', text)  # Remove emojis
-        text = re.sub(r'[^\w\s\.\,\!\?\-\:\;]', '', text)  # Keep only alphanumeric, spaces, and punctuation
-        
-        # Replace common patterns
-        text = text.replace('$', 'dollar ')
-        text = text.replace('€', 'euro ')
-        text = text.replace('£', 'pound ')
-        text = text.replace('₹', 'rupee ')
-        text = text.replace('/', ' or ')
-        text = text.replace('\\', ' backslash ')
-        text = text.replace('_', ' ')
-        text = text.replace('-', ' ')
-        
-        # Remove multiple spaces
-        text = re.sub(r'\s+', ' ', text).strip()
-        
-        return text
+        if self._worker and self._worker.is_alive():
+            self._worker.join(2)
 
+    # ========= CLEAN =========
+    def _clean(self, text: str) -> str:
+        text = text.translate(CHAR_REPLACEMENTS)
+        text = EMOJI_PATTERN.sub("", text)
+        text = CLEANUP_PATTERN.sub("", text)
+        return SPACES_PATTERN.sub(" ", text).strip()
+
+    # ========= WORKER =========
     def _worker_loop(self):
-        """
-        Worker that processes TTS queue items.
-        Runs in a dedicated thread with its own COM context.
-        """
-        import time
-        try:
-            import pythoncom
-            python_com_available = True
-        except ImportError:
-            python_com_available = False
-            
-        # Initialize COM context for this thread (Critical for Windows)
-        if python_com_available:
-            pythoncom.CoInitialize()
-            
-        # Initialize engine within the thread
-        self._init_engine()
-        
-        while not self._stop_event.is_set():
+        # COM init (Windows)
+        pythoncom = None
+        if self._is_windows:
             try:
-                # Get next item from queue
+                import pythoncom as pc
+                # Try to initialize with apartment threaded (standard for UI/SAPI5)
+                # If already initialized with a different mode, PyQt/Ole might have handled it.
                 try:
-                    item = self._queue.get(timeout=0.1)
+                    pc.CoInitializeEx(pc.COINIT_APARTMENTTHREADED)
+                except Exception:
+                    pc.CoInitialize() # Fallback
+                pythoncom = pc
+            except Exception as e:
+                print(f"[TTS] COM init failed: {e}")
+
+        # IMPORTANT: init engine here once
+        self._init_engine()
+
+        try:
+            while not self._stop_event.is_set():
+                try:
+                    item = self._queue.get(timeout=0.2)
                 except queue.Empty:
-                    # Just continue and check stop_event
                     continue
-                    
+
                 if item is None:
                     break
 
-                # Special protocol item for synchronous waiting
-                if isinstance(item, tuple) and len(item) == 2 and item[0] == "__MILO_TTS_DONE__":
-                    done_event = item[1]
-                    try:
-                        done_event.set()
-                    except Exception:
-                        pass
+                text = self._clean(item.text)
+                if not text:
+                    if item.done:
+                        item.done.set()
                     continue
 
-                text = str(item).strip()
-                if not text:
-                    continue
-                
-                # Clean up text
-                text = self._clean_text(text)
-                if not text:
-                    continue
-                
-                self.is_speaking = True
-                
-                try:
-                    if self.engine:
-                        self.engine.stop()  # prevent queue buildup
-                        self.engine.say(text)
-                        try:
-                            self.engine.runAndWait()
-                        except RuntimeError:
-                            # Ignore "run loop already started" or "not started" logic errors
-                            # that sometimes happen with pyttsx3 in threads
-                            pass
-                except Exception as e:
-                    print(f"Error during TTS: {e}")
-                    # Try to re-init engine on error
-                    if python_com_available:
-                        try:
-                            pythoncom.CoUninitialize()
-                            pythoncom.CoInitialize()
-                        except:
-                            pass
+                if not self.engine:
                     self._init_engine()
+                    if not self.engine:
+                        if item.done:
+                            item.done.set()
+                        continue
+
+                try:
+                    self.is_speaking = True
+
+                    # Windows SAPI can become silent after first run on reused engine.
+                    # Recreate engine per utterance for stable continuous speech.
+                    if self._reinit_each_utterance:
+                        try:
+                            if self.engine:
+                                self.engine.stop()
+                        except Exception:
+                            pass
+                        self.engine = None
+                        self._init_engine()
+                        if not self.engine:
+                            continue
+
+                    self.engine.say(text)
+                    self.engine.runAndWait()
+
+                    if self._reinit_each_utterance:
+                        try:
+                            self.engine.stop()
+                        except Exception:
+                            pass
+                        self.engine = None
+
+                except RuntimeError:
+                    # pyttsx3 loop glitch — reinit safely
+                    try:
+                        self.engine.stop()
+                    except Exception:
+                        pass
+                    self.engine = None
+                    self._init_engine()
+                except Exception as e:
+                    print(f"[TTS] speak error: {e}")
+                    try:
+                        if self.engine:
+                            self.engine.stop()
+                    except Exception:
+                        pass
+                    self.engine = None
+                    self._init_engine()
+
                 finally:
                     self.is_speaking = False
-                    
-            except Exception as e:
-                print(f"Error in worker loop: {e}")
-                self.is_speaking = False
-        
-        # Cleanup
-        if self.engine:
-            try:
-                self.engine.stop()
-            except:
-                pass
-                
-        if python_com_available:
-            try:
-                pythoncom.CoUninitialize()
-            except:
-                pass
+                    if item.done:
+                        item.done.set()
+
+        finally:
+            if self.engine:
+                try:
+                    self.engine.stop()
+                except Exception:
+                    pass
+
+            if pythoncom:
+                try:
+                    pythoncom.CoUninitialize()
+                except Exception:
+                    pass

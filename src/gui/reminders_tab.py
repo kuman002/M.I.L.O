@@ -4,10 +4,10 @@ Reminder management and notifications
 """
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QLineEdit,
-    QTableWidget, QTableWidgetItem, QDateEdit, QTimeEdit, QMessageBox, QHeaderView
+    QTableWidget, QTableWidgetItem, QDateEdit, QTimeEdit, QMessageBox, QHeaderView, QFrame, QStyle
 )
-from PyQt5.QtCore import QDate, QTime
-from PyQt5.QtGui import QColor
+from PyQt5.QtCore import QDate, QTime, Qt
+from PyQt5.QtGui import QColor, QFont
 from gui.base_tab import BaseTab
 
 
@@ -17,11 +17,23 @@ class RemindersTab(BaseTab):
     def setup_ui(self):
         """Build the reminders UI"""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(15)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
         
         # Add reminder section
+        add_card = QFrame()
+        add_card.setObjectName("panelCard")
+        add_card.setStyleSheet("QFrame#panelCard { border-left: 3px solid #A855F7; }")
+        add_card_layout = QVBoxLayout(add_card)
+        add_card_layout.setContentsMargins(14, 12, 14, 12)
+        add_card_layout.setSpacing(10)
+
+        add_title = QLabel("⏰ Create Reminder")
+        add_title.setObjectName("sectionTitle")
+        add_card_layout.addWidget(add_title)
+
         add_layout = QHBoxLayout()
+        add_layout.setSpacing(10)
         
         self.reminder_text = QLineEdit()
         self.reminder_text.setPlaceholderText("Reminder message...")
@@ -40,17 +52,48 @@ class RemindersTab(BaseTab):
         add_layout.addWidget(self.reminder_time)
         
         add_btn = QPushButton("➕ Add Reminder")
+        add_btn.setObjectName("primary")
         add_btn.clicked.connect(self.add_reminder)
         add_layout.addWidget(add_btn)
-        
-        layout.addLayout(add_layout)
+
+        add_card_layout.addLayout(add_layout)
+        layout.addWidget(add_card)
         
         # Reminders table
+        table_card = QFrame()
+        table_card.setObjectName("panelCard")
+        table_card.setStyleSheet("QFrame#panelCard { border-left: 3px solid #60A5FA; }")
+        table_card_layout = QVBoxLayout(table_card)
+        table_card_layout.setContentsMargins(12, 12, 12, 12)
+        table_card_layout.setSpacing(10)
+
+        table_title = QLabel("📅 Scheduled Reminders")
+        table_title.setObjectName("sectionTitle")
+        table_card_layout.addWidget(table_title)
+
         self.reminders_table = QTableWidget()
         self.reminders_table.setColumnCount(5)
         self.reminders_table.setHorizontalHeaderLabels(["Message", "Date", "Time", "Status", "Delete"])
         self.reminders_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        layout.addWidget(self.reminders_table)
+        self.reminders_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.reminders_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.reminders_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.reminders_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        self.reminders_table.setColumnWidth(1, 135)
+        self.reminders_table.setColumnWidth(2, 100)
+        self.reminders_table.setColumnWidth(3, 120)
+        self.reminders_table.setColumnWidth(4, 100)
+        self.reminders_table.verticalHeader().setVisible(False)
+        self.reminders_table.verticalHeader().setDefaultSectionSize(45)
+        self.reminders_table.setShowGrid(False)
+        self.reminders_table.setAlternatingRowColors(True)
+        self.reminders_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.reminders_table.setSelectionMode(QTableWidget.SingleSelection)
+        self.reminders_table.setFocusPolicy(Qt.NoFocus)
+        self.reminders_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.reminders_table.setMinimumHeight(320)
+        table_card_layout.addWidget(self.reminders_table)
+        layout.addWidget(table_card)
         
         self.load_reminders()
     
@@ -96,7 +139,7 @@ class RemindersTab(BaseTab):
             """)
             self.assistant.db.conn.commit()
             
-            cursor.execute("SELECT * FROM reminders ORDER BY datetime")
+            cursor.execute("SELECT * FROM reminders ORDER BY datetime DESC")
             rows = cursor.fetchall()
             
             # Convert sqlite3.Row to dict
@@ -110,26 +153,45 @@ class RemindersTab(BaseTab):
             self.reminders_table.setRowCount(len(reminders))
             
             for i, reminder in enumerate(reminders):
-                self.reminders_table.setItem(i, 0, QTableWidgetItem(reminder.get('message', '')))
+                message_item = QTableWidgetItem(reminder.get('message', ''))
+                message_item.setFont(QFont('Arial', 11))
+                self.reminders_table.setItem(i, 0, message_item)
                 
                 datetime_str = reminder.get('datetime', '')
                 if ' ' in datetime_str:
                     date_part, time_part = datetime_str.split(' ', 1)
-                    self.reminders_table.setItem(i, 1, QTableWidgetItem(date_part))
-                    self.reminders_table.setItem(i, 2, QTableWidgetItem(time_part))
+                    date_item = QTableWidgetItem(f"📅 {date_part}")
+                    date_item.setTextAlignment(Qt.AlignCenter)
+                    date_item.setFont(QFont('Arial', 10))
+                    self.reminders_table.setItem(i, 1, date_item)
+                    time_item = QTableWidgetItem(time_part)
+                    time_item.setTextAlignment(Qt.AlignCenter)
+                    time_item.setFont(QFont('Arial', 10))
+                    self.reminders_table.setItem(i, 2, time_item)
                 else:
-                    self.reminders_table.setItem(i, 1, QTableWidgetItem(datetime_str))
-                    self.reminders_table.setItem(i, 2, QTableWidgetItem(''))
+                    date_item = QTableWidgetItem(datetime_str)
+                    date_item.setTextAlignment(Qt.AlignCenter)
+                    date_item.setFont(QFont('Arial', 10))
+                    self.reminders_table.setItem(i, 1, date_item)
+                    time_item = QTableWidgetItem('')
+                    time_item.setTextAlignment(Qt.AlignCenter)
+                    time_item.setFont(QFont('Arial', 10))
+                    self.reminders_table.setItem(i, 2, time_item)
                 
                 status = reminder.get('status', 'pending')
                 status_item = QTableWidgetItem(status.upper())
+                status_item.setTextAlignment(Qt.AlignCenter)
+                status_item.setFont(QFont('Arial', 10, QFont.Bold))
                 if status == 'completed':
                     status_item.setForeground(QColor('#10b981'))
                 elif status == 'pending':
-                    status_item.setForeground(QColor('#f59e0b'))
+                    status_item.setForeground(QColor('#38BDF8'))
                 self.reminders_table.setItem(i, 3, status_item)
                 
-                delete_btn = QPushButton("🗑️")
+                delete_btn = QPushButton()
+                delete_btn.setIcon(self.style().standardIcon(QStyle.SP_TrashIcon))
+                delete_btn.setToolTip("Delete reminder")
+                delete_btn.setFixedSize(74, 30)
                 delete_btn.clicked.connect(lambda checked, id=reminder.get('id'): self.delete_reminder(id))
                 self.reminders_table.setCellWidget(i, 4, delete_btn)
         except Exception as e:

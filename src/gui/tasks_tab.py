@@ -5,9 +5,10 @@ Task management and visualization
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QLineEdit,
     QTableWidget, QTableWidgetItem, QComboBox, QDateEdit, QMessageBox,
-    QHeaderView, QDialog, QDialogButtonBox
+    QHeaderView, QDialog, QDialogButtonBox, QFrame, QStyle
 )
-from PyQt5.QtCore import QDate
+from PyQt5.QtCore import QDate, Qt
+from PyQt5.QtGui import QFont, QColor
 from gui.base_tab import BaseTab
 from gui.dashboards import TaskDashboardChart, PriorityTasksChart
 
@@ -18,11 +19,23 @@ class TasksTab(BaseTab):
     def setup_ui(self):
         """Build the tasks UI"""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(15)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
         
         # Add task section
+        add_card = QFrame()
+        add_card.setObjectName("panelCard")
+        add_card.setStyleSheet("QFrame#panelCard { border-left: 3px solid #38BDF8; }")
+        add_card_layout = QVBoxLayout(add_card)
+        add_card_layout.setContentsMargins(14, 12, 14, 12)
+        add_card_layout.setSpacing(10)
+
+        add_title = QLabel("📝 Create Task")
+        add_title.setObjectName("sectionTitle")
+        add_card_layout.addWidget(add_title)
+
         add_layout = QHBoxLayout()
+        add_layout.setSpacing(10)
         
         self.task_title = QLineEdit()
         self.task_title.setPlaceholderText("Task title...")
@@ -37,14 +50,23 @@ class TasksTab(BaseTab):
         add_layout.addWidget(self.task_date)
         
         add_btn = QPushButton("➕ Add Task")
+        add_btn.setObjectName("primary")
         add_btn.clicked.connect(self.add_task)
         add_layout.addWidget(add_btn)
-        
-        layout.addLayout(add_layout)
+
+        add_card_layout.addLayout(add_layout)
+        layout.addWidget(add_card)
         
         # Charts section
+        charts_card = QFrame()
+        charts_card.setObjectName("panelCard")
+        charts_card.setStyleSheet("QFrame#panelCard { border-left: 3px solid #6366F1; }")
+        charts_card_layout = QVBoxLayout(charts_card)
+        charts_card_layout.setContentsMargins(12, 12, 12, 12)
+        charts_card_layout.setSpacing(10)
+
         charts_layout = QHBoxLayout()
-        charts_layout.setSpacing(15)
+        charts_layout.setSpacing(12)
         
         self.task_chart = TaskDashboardChart()
         self.priority_chart = PriorityTasksChart()
@@ -52,21 +74,46 @@ class TasksTab(BaseTab):
         charts_layout.addWidget(self.task_chart, 1)
         charts_layout.addWidget(self.priority_chart, 1)
         
-        layout.addLayout(charts_layout)
+        charts_card_layout.addLayout(charts_layout)
         
         # Tasks table
+        table_card = QFrame()
+        table_card.setObjectName("panelCard")
+        table_card.setStyleSheet("QFrame#panelCard { border-left: 3px solid #22D3EE; }")
+        table_card_layout = QVBoxLayout(table_card)
+        table_card_layout.setContentsMargins(12, 12, 12, 12)
+        table_card_layout.setSpacing(10)
+
+        table_title = QLabel("📋 Pending Tasks")
+        table_title.setObjectName("sectionTitle")
+        table_card_layout.addWidget(table_title)
+
         self.tasks_table = QTableWidget()
         self.tasks_table.setColumnCount(7)
         self.tasks_table.setHorizontalHeaderLabels(["ID", "Title", "Priority", "Due Date", "Status", "Edit", "Delete"])
         self.tasks_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.tasks_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.tasks_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.tasks_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.tasks_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        self.tasks_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        self.tasks_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeToContents)
         self.tasks_table.setAlternatingRowColors(True)
         self.tasks_table.setMinimumHeight(250)
         self.tasks_table.verticalHeader().setDefaultSectionSize(45)
         self.tasks_table.verticalHeader().setVisible(False)
         self.tasks_table.setShowGrid(False)
         self.tasks_table.setSelectionBehavior(QTableWidget.SelectRows)
-        layout.addWidget(self.tasks_table)
+        self.tasks_table.setSelectionMode(QTableWidget.SingleSelection)
+        self.tasks_table.setFocusPolicy(Qt.NoFocus)
+        table_card_layout.addWidget(self.tasks_table)
+
+        # Content split: charts (left) + table (right)
+        content_layout = QHBoxLayout()
+        content_layout.setSpacing(12)
+        content_layout.addWidget(charts_card, 2)
+        content_layout.addWidget(table_card, 3)
+        layout.addLayout(content_layout)
         
         self.load_tasks()
     
@@ -94,20 +141,60 @@ class TasksTab(BaseTab):
         """Load tasks into table"""
         try:
             tasks = self.assistant.task_manager.get_pending_tasks()
+            tasks = sorted(tasks, key=lambda t: t.get('id', 0), reverse=True)
             self.tasks_table.setRowCount(len(tasks))
             
             for i, task in enumerate(tasks):
-                self.tasks_table.setItem(i, 0, QTableWidgetItem(str(task.get('id', ''))))
-                self.tasks_table.setItem(i, 1, QTableWidgetItem(task.get('title', '')))
-                self.tasks_table.setItem(i, 2, QTableWidgetItem(task.get('priority', '').upper()))
-                self.tasks_table.setItem(i, 3, QTableWidgetItem(task.get('due_date', '')[:10]))
-                self.tasks_table.setItem(i, 4, QTableWidgetItem(task.get('status', '')))
+                id_item = QTableWidgetItem(str(task.get('id', '')))
+                id_item.setTextAlignment(Qt.AlignCenter)
+                id_item.setFont(QFont('Arial', 11, QFont.Medium))
+                self.tasks_table.setItem(i, 0, id_item)
+
+                title_item = QTableWidgetItem(task.get('title', ''))
+                title_item.setFont(QFont('Arial', 11))
+                self.tasks_table.setItem(i, 1, title_item)
+
+                priority_item = QTableWidgetItem(task.get('priority', '').upper())
+                priority_item.setTextAlignment(Qt.AlignCenter)
+                priority_item.setFont(QFont('Arial', 10, QFont.Bold))
+                priority = task.get('priority', '').lower()
+                if priority == 'high' or priority == 'urgent':
+                    priority_item.setForeground(QColor('#FB7185'))
+                elif priority == 'medium':
+                    priority_item.setForeground(QColor('#F59E0B'))
+                else:
+                    priority_item.setForeground(QColor('#34D399'))
+                self.tasks_table.setItem(i, 2, priority_item)
+
+                due_date = task.get('due_date') or ''
+                due_item = QTableWidgetItem(f"📅 {due_date[:10]}" if due_date else "—")
+                due_item.setTextAlignment(Qt.AlignCenter)
+                due_item.setFont(QFont('Arial', 10))
+                self.tasks_table.setItem(i, 3, due_item)
+
+                status_item = QTableWidgetItem(task.get('status', '').upper())
+                status_item.setTextAlignment(Qt.AlignCenter)
+                status_item.setFont(QFont('Arial', 10, QFont.Bold))
+                status = task.get('status', '').lower()
+                if status == 'completed':
+                    status_item.setForeground(QColor('#10B981'))
+                elif status == 'pending':
+                    status_item.setForeground(QColor('#38BDF8'))
+                elif status == 'overdue':
+                    status_item.setForeground(QColor('#FB7185'))
+                self.tasks_table.setItem(i, 4, status_item)
                 
-                edit_btn = QPushButton("✏️")
+                edit_btn = QPushButton()
+                edit_btn.setIcon(self.style().standardIcon(QStyle.SP_FileDialogDetailedView))
+                edit_btn.setToolTip("Edit task")
+                edit_btn.setFixedSize(74, 30)
                 edit_btn.clicked.connect(lambda checked, t=task: self.edit_task(t))
                 self.tasks_table.setCellWidget(i, 5, edit_btn)
                 
-                delete_btn = QPushButton("🗑️")
+                delete_btn = QPushButton()
+                delete_btn.setIcon(self.style().standardIcon(QStyle.SP_TrashIcon))
+                delete_btn.setToolTip("Delete task")
+                delete_btn.setFixedSize(74, 30)
                 delete_btn.clicked.connect(lambda checked, t=task: self.delete_task(t))
                 self.tasks_table.setCellWidget(i, 6, delete_btn)
             

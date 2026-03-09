@@ -1,460 +1,578 @@
-"""
-Natural Language Processing Parser for MILO
-Offline command understanding and intent recognition - OPTIMIZED
-"""
-
+import json
 import re
-from typing import Dict, Optional, List, Tuple
+from difflib import SequenceMatcher
 from datetime import datetime, timedelta
-
+from typing import Any, Dict, Optional, List, Tuple
+import dateparser
+from word2number import w2n
 
 class NLPParser:
-    """Optimized offline NLP parser for understanding user commands"""
+    """
+    Advanced Conversational NLU for M.I.L.O.
+    Uses Local Llama 3 to semantically understand intent and extract entities.
+    """
     
     def __init__(self):
-        """Initialize NLP parser with intent patterns and keywords"""
-        self.intent_patterns = self._load_patterns()
-        self.keyword_weights = self._load_keyword_weights()
-        self.entity_extractors = self._load_entity_extractors()
-    
-    def _load_keyword_weights(self) -> Dict[str, Dict[str, float]]:
-        """Load keyword weights for better intent matching"""
-        return {
-            'create_task': {
-                'create': 1.0, 'add': 0.9, 'new': 0.8, 'make': 0.7, 'schedule': 0.9, 'set': 0.8,
-                'task': 1.0, 'todo': 1.0
-            },
-            'add_reminder': {
-                'remind': 1.0, 'reminder': 1.0, 'remember': 0.9, 'notify': 0.8, 'alert': 0.8,
-                'set': 0.7, 'schedule': 0.7
-            },
-            'list_tasks': {
-                'show': 0.9, 'list': 1.0, 'display': 0.8, 'get': 0.7, 'tell': 0.6,
-                'task': 0.8, 'todo': 0.8, 'reminders': 0.9, 'what are': 0.8
-            },
-            'complete_task': {
-                'complete': 1.0, 'finish': 0.9, 'done': 0.8, 'mark': 0.85, 'check off': 0.9,
-                'task': 0.8, 'todo': 0.8
-            },
-            'delete_task': {
-                'delete': 1.0, 'remove': 0.95, 'cancel': 0.9, 'task': 0.8, 'todo': 0.8
-            },
-            'add_expense': {
-                'expense': 1.0, 'spent': 0.95, 'spend': 0.9, 'cost': 0.85, 'paid': 0.8,
-                'money': 0.7, 'dollar': 0.8, 'rupee': 0.8, 'rs': 0.7, 'add': 0.6
-            },
-            'add_income': {
-                'income': 1.0, 'earned': 0.95, 'earn': 0.9, 'salary': 0.95, 'money': 0.7, 'received': 0.8
-            },
-            'check_balance': {
-                'balance': 1.0, 'money': 0.8, 'finance': 0.9, 'budget': 0.85,
-                'how much': 0.8, 'check': 0.7, 'show': 0.7, 'total': 0.7
-            },
-            'add_habit': {
-                'habit': 1.0, 'create': 0.9, 'add': 0.9, 'new': 0.8, 'track': 0.85, 'start': 0.7
-            },
-            'log_habit': {
-                'habit': 0.9, 'log': 0.95, 'mark': 0.85, 'complete': 0.8, 'did': 0.7
-            },
-            'greeting': {
-                'hello': 1.0, 'hi': 1.0, 'hey': 0.95, 'good morning': 0.9, 'morning': 0.7
-            },
-            'goodbye': {
-                'goodbye': 1.0, 'bye': 0.95, 'exit': 0.9, 'quit': 0.9, 'close': 0.7
-            },
-            'help': {
-                'help': 1.0, 'commands': 0.9, 'what can': 0.8, 'how to': 0.8
-            },
-            'open_app': {
-                'open': 1.0, 'launch': 0.95, 'start': 0.9, 'run': 0.85,
-                'app': 0.8, 'application': 0.8, 'program': 0.8
-            },
-            'open_file': {
-                'open': 1.0, 'file': 0.9, 'document': 0.85, 'show': 0.7
-            },
-            'open_folder': {
-                'open': 1.0, 'folder': 1.0, 'directory': 0.95, 'path': 0.8
-            },
-            'open_url': {
-                'open': 1.0, 'url': 1.0, 'website': 0.95, 'browse': 0.9,
-                'visit': 0.85, 'go to': 0.8, 'link': 0.8
-            },
-        }
-    
-    def _load_entity_extractors(self) -> Dict[str, callable]:
-        """Load entity extraction functions"""
-        return {
-            'amount': self._extract_amount,
-            'category': self._extract_category,
-            'priority': self._extract_priority,
-            'date': self._extract_date,
-            'task_id': self._extract_task_id,
-            'title': self._extract_title,
-        }
-    
-    def _load_patterns(self) -> Dict[str, List[Tuple[re.Pattern, float]]]:
-        """Load regex patterns with confidence weights for different intents"""
-        return {
-            'create_task': [
-                (re.compile(r'\b(?:create|add|new|make)\s+(?:a\s+)?(?:task|todo|reminder)\b', re.IGNORECASE), 1.0),
-                (re.compile(r'\b(?:task|todo|reminder)\b.*\b(?:create|add|new|make)\b', re.IGNORECASE), 0.95),
-                (re.compile(r'\b(?:schedule|set)\s+(?:a\s+)?(?:task|reminder|alarm)\b', re.IGNORECASE), 0.9),
-                (re.compile(r'\bcreate\b.*?\b(?:do|task|work)\b', re.IGNORECASE), 0.7),
-            ],
-            'add_reminder': [
-                (re.compile(r'\bremind\s+me\b', re.IGNORECASE), 1.0),
-                (re.compile(r'\bset\s+(?:a\s+)?reminder\b', re.IGNORECASE), 0.95),
-                (re.compile(r'\breminder\b.*\b(?:to|about)\b', re.IGNORECASE), 0.9),
-            ],
-            'list_tasks': [
-                (re.compile(r'\b(?:show|list|display|get|tell me|what are)\b.*\b(?:tasks|todos|reminders)\b', re.IGNORECASE), 1.0),
-                (re.compile(r'\b(?:my\s+)?(?:tasks|todos|reminders)\b', re.IGNORECASE), 0.85),
-                (re.compile(r'\blist\b', re.IGNORECASE), 0.6),
-            ],
-            'complete_task': [
-                (re.compile(r'\b(?:complete|finish|done|mark|check off)\b.*\b(?:task|todo)\b', re.IGNORECASE), 1.0),
-                (re.compile(r'\b(?:task|todo)\b.*\b(?:complete|finish|done)\b', re.IGNORECASE), 0.95),
-                (re.compile(r'\bdone\b.*?\b(?:task|work)\b', re.IGNORECASE), 0.7),
-            ],
-            'delete_task': [
-                (re.compile(r'\b(?:delete|remove|cancel)\b.*\b(?:task|todo|reminder)\b', re.IGNORECASE), 1.0),
-                (re.compile(r'\b(?:task|todo)\b.*\b(?:delete|remove)\b', re.IGNORECASE), 0.95),
-            ],
-            'add_expense': [
-                (re.compile(r'\b(?:add|spent|spent|cost|paid)\b.*\b(?:expense|money)\b', re.IGNORECASE), 1.0),
-                (re.compile(r'\b(?:expense|spent|spend)\b.*\d+', re.IGNORECASE), 0.95),
-                (re.compile(r'\bi\s+(?:spent|spend|paid)\b', re.IGNORECASE), 0.85),
-            ],
-            'add_income': [
-                (re.compile(r'\b(?:add|earned|earn|got|received)\b.*\b(?:income|money|salary)\b', re.IGNORECASE), 1.0),
-                (re.compile(r'\b(?:income|earned|salary)\b', re.IGNORECASE), 0.95),
-            ],
-            'check_balance': [
-                (re.compile(r'\b(?:check|show|what\s+is|tell\s+me)\b.*\b(?:balance|money|total)\b', re.IGNORECASE), 1.0),
-                (re.compile(r'\b(?:balance|total|how\s+much)\b', re.IGNORECASE), 0.8),
-            ],
-            'add_habit': [
-                (re.compile(r'\b(?:add|create|new|track)\b.*\b(?:habit)\b', re.IGNORECASE), 1.0),
-                (re.compile(r'\b(?:habit)\b.*\b(?:add|create|new)\b', re.IGNORECASE), 0.95),
-            ],
-            'log_habit': [
-                (re.compile(r'\b(?:log|mark|complete|track)\b.*\b(?:habit)\b', re.IGNORECASE), 1.0),
-            ],
-            'greeting': [
-                (re.compile(r'\b(?:hello|hi|hey)\b', re.IGNORECASE), 1.0),
-                (re.compile(r'\b(?:good\s+(?:morning|afternoon|evening))\b', re.IGNORECASE), 0.95),
-            ],
-            'goodbye': [
-                (re.compile(r'\b(?:goodbye|bye|exit|quit)\b', re.IGNORECASE), 1.0),
-            ],
-            'help': [
-                (re.compile(r'\b(?:help|commands?)\b', re.IGNORECASE), 1.0),
-            ],
-            'open_app': [
-                (re.compile(r'\b(?:open|launch|start|run)\b.*\b(?:app|application|program)\b', re.IGNORECASE), 1.0),
-                (re.compile(r'\b(?:open|launch|start|run)\b\s+(\w+)', re.IGNORECASE), 0.85),
-            ],
-            'open_file': [
-                (re.compile(r'\b(?:open|show)\b.*\b(?:file|document)\b', re.IGNORECASE), 1.0),
-                (re.compile(r'\bopen\b.*\.(\w+)', re.IGNORECASE), 0.9),
-            ],
-            'open_folder': [
-                (re.compile(r'\b(?:open|show)\b.*\b(?:folder|directory)\b', re.IGNORECASE), 1.0),
-                (re.compile(r'\bopen\b.*\\[^\\]*$', re.IGNORECASE), 0.85),
-            ],
-            'open_url': [
-                (re.compile(r'\b(?:open|visit|go to|browse)\b.*\b(?:url|website|link|https?://)', re.IGNORECASE), 1.0),
-                (re.compile(r'https?://[\w./]+', re.IGNORECASE), 0.95),
-            ],
-        }
-    
-    def parse(self, text: str) -> Dict[str, any]:
-        """
-        Parse user input and extract intent and entities with optimized matching
-        
-        Returns:
-            Dictionary with 'intent', 'entities', 'confidence', and 'original_text'
-        """
-        text = text.strip()
-        text_lower = text.lower()
-        
-        # Find matching intent with confidence scoring
-        intent_scores = {}
-        
-        # Phase 1: Pattern matching
-        for intent, patterns in self.intent_patterns.items():
-            best_pattern_score = 0.0
-            
-            for pattern, base_confidence in patterns:
-                match = pattern.search(text_lower)
-                if match:
-                    # Calculate enhanced confidence
-                    match_length = len(match.group(0))
-                    text_length = len(text_lower)
-                    pattern_confidence = (match_length / max(text_length, 1)) * base_confidence
-                    
-                    if pattern_confidence > best_pattern_score:
-                        best_pattern_score = pattern_confidence
-            
-            if best_pattern_score > 0:
-                intent_scores[intent] = best_pattern_score
-        
-        # Phase 2: Keyword-based scoring (fallback/supplement)
-        if not intent_scores or max(intent_scores.values()) < 0.3:
-            keyword_scores = self._calculate_keyword_scores(text_lower)
-            # Merge keyword scores (lower weight than pattern matching)
-            for intent, score in keyword_scores.items():
-                intent_scores[intent] = intent_scores.get(intent, 0) + (score * 0.5)
-        
-        # Phase 3: Determine best intent and confidence
-        if intent_scores:
-            best_intent = max(intent_scores, key=intent_scores.get)
-            best_confidence = min(intent_scores[best_intent], 1.0)
-        else:
-            best_intent = 'unknown'
-            best_confidence = 0.0
-        
-        # Extract entities based on intent
-        entities = self._extract_entities(text, text_lower, best_intent)
-        
-        return {
-            'intent': best_intent,
-            'entities': entities,
-            'confidence': best_confidence,
-            'original_text': text,
-            'intent_scores': intent_scores  # For debugging
-        }
-    
-    def _calculate_keyword_scores(self, text: str) -> Dict[str, float]:
-        """Calculate intent scores based on keyword matching"""
-        scores = {}
-        
-        for intent, keywords in self.keyword_weights.items():
-            total_weight = 0.0
-            matched_count = 0
-            
-            for keyword, weight in keywords.items():
-                if keyword in text:
-                    total_weight += weight
-                    matched_count += 1
-            
-            if matched_count > 0:
-                # Normalize score
-                scores[intent] = min(total_weight / 10.0, 1.0)
-        
-        return scores
-    
-    def _extract_entities(self, text: str, text_lower: str, intent: str) -> Dict[str, any]:
-        """Extract entities from text based on intent - OPTIMIZED"""
-        entities = {}
-        
-        for entity_type, extractor in self.entity_extractors.items():
-            try:
-                value = extractor(text, text_lower, intent)
-                if value is not None:
-                    entities[entity_type] = value
-            except Exception as e:
-                pass  # Skip entity extraction errors
-        
-        return entities
-    
-    def _extract_title(self, text: str, text_lower: str, intent: str) -> Optional[str]:
-        """Extract title, app name, file path, or URL based on intent"""
-        if intent in ['create_task', 'add_reminder', 'add_habit']:
-            # Remove common command prefixes and intent-specific keywords
-            title = re.sub(
-                r'\b(?:remind\s+me\s+to|remind\s+me|set\s+reminder|create|add|new|make|a|an|the|task|todo|reminder|alarm|schedule|set|habit|to|please|start|track)\b',
-                '', text_lower, flags=re.IGNORECASE
-            )
-            # Remove time indicators (basic approach)
-            title = re.sub(r'\b(?:in|at|on|today|tomorrow|next|seconds?|mins?|minutes?|hours?|days?|am|pm)\b.*', '', title).strip()
-            
-            title = re.sub(r'\s+', ' ', title).strip()
-            if len(title) > 0:
-                return title
-            return "Reminder" if intent == 'add_reminder' else "New Habit" if intent == 'add_habit' else "Untitled Task"
-        
-        elif intent == 'open_app':
-            # Extract app name after open/launch/start/run
-            app_match = re.search(r'\b(?:open|launch|start|run)\s+(?:the\s+)?(\w+(?:\s+\w+)?)', text_lower, re.IGNORECASE)
-            if app_match:
-                app_name = app_match.group(1).strip()
-                # Remove trailing articles or words
-                app_name = re.sub(r'\b(?:app|application|program|please)\s*$', '', app_name).strip()
-                if len(app_name) > 0:
-                    return app_name
-            return None
-        
-        elif intent in ['open_file', 'open_folder']:
-            # Extract file/folder path - usually after open command
-            path_match = re.search(r'\b(?:open|show)\s+(?:the\s+)?(?:file|folder|directory)?\s*["\']?([^"\']+?)["\']?\s*(?:$|please|now)', text_lower, re.IGNORECASE)
-            if path_match:
-                path = path_match.group(1).strip()
-                if len(path) > 2:
-                    return path
-            # Try to find file path without specific keywords
-            path_match = re.search(r'([A-Za-z]:\\[^"\s]+|/[^\s"]+)', text)
-            if path_match:
-                return path_match.group(1).strip()
-            return None
-        
-        elif intent == 'open_url':
-            # Extract URL
-            url_match = re.search(r'(https?://[^\s]+|www\.[^\s]+|[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})', text)
-            if url_match:
-                return url_match.group(1).strip()
-            # Try pattern after "open" or "visit"
-            url_match = re.search(r'\b(?:open|visit|go to|browse)\s+(?:the\s+)?(\S+)', text_lower, re.IGNORECASE)
-            if url_match:
-                url = url_match.group(1).strip()
-                if len(url) > 3:
-                    return url
-            return None
-        
-        return None
-    
-    def _extract_amount(self, text: str, text_lower: str, intent: str) -> Optional[float]:
-        """Extract monetary amount"""
-        if intent not in ['add_expense', 'add_income']:
-            return None
-        
-        # Match numbers with optional currency symbols; avoid time/date tokens
-        amount_match = re.search(r'(?<!:)(\d+(?:\.\d{1,2})?)\s*(?:dollar|dollars|rupee|rupees|rs|₹|\$)?', text_lower)
-        if amount_match:
-            return float(amount_match.group(1))
-        return None
-    
-    def _extract_category(self, text: str, text_lower: str, intent: str) -> Optional[str]:
-        """Extract expense/income category"""
-        categories = ['food', 'transport', 'shopping', 'entertainment', 'bills', 'health', 'education', 'salary', 'freelance', 'investment', 'other']
-        
-        for category in categories:
-            if category in text_lower:
-                return category
+        print("🧠 Initializing Conversational NLP (Llama 3)...")
 
-        # Try to extract category after common prepositions
-        if intent in ['add_expense', 'add_income']:
-            match = re.search(r'\b(?:for|on|from)\s+([a-zA-Z ]+)', text_lower)
-            if match:
-                candidate = match.group(1).strip().split(' ')[0]
-                if candidate:
-                    return candidate
+        self.llm = None
+        self._llm_disabled = False
+        self._warned_unavailable = False
+        self._app_catalog: List[str] = [
+            "notepad", "calculator", "paint", "word", "excel", "powerpoint",
+            "chrome", "firefox", "edge", "brave", "opera", "browser",
+            "code", "vscode", "visual studio", "terminal", "cmd", "powershell",
+            "slack", "discord", "spotify", "file explorer", "settings"
+        ]
+        self._app_aliases: Dict[str, str] = {
+            "note pad": "notepad",
+            "not pad": "notepad",
+            "notebad": "notepad",
+            "not bad": "notepad",
+            "north bad": "notepad",
+            "noth bad": "notepad",
+            "noths bad": "notepad",
+            "north pad": "notepad",
+            "open note": "notepad",
+            "vs code": "vscode",
+            "visual studio code": "vscode",
+            "ms word": "word",
+            "power point": "powerpoint",
+            "google chrome": "chrome",
+            "microsoft edge": "edge"
+        }
+        self._init_llm()
+
+    def _init_llm(self):
+        try:
+            from langchain_ollama import OllamaLLM
+            try:
+                self.llm = OllamaLLM(model="llama3", format="json", temperature=0.0)
+            except TypeError:
+                self.llm = OllamaLLM(model="llama3", temperature=0.0)
+            return
+        except Exception:
+            pass
+
+        try:
+            from langchain_community.llms import Ollama
+            self.llm = Ollama(model="llama3", format="json", temperature=0.0)
+        except Exception:
+            self.llm = None
         
+    def _get_system_prompt(self) -> str:
+        """The strict instruction set for the LLM."""
+        current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        return f"""
+        You are the Intent Routing Engine for M.I.L.O., a context-aware assistant.
+        Strictly categorize requests as either a TASK or a REMINDER based on the psychological difference between Effort and Time.
+
+        1. THE TASK (Effort-Based):
+           - Purpose: Actions requiring focus, sustained effort, or multi-step work.
+           - Triggers: "finish", "build", "study", "code", "prepare", "write", "debug", "start".
+           - Lifecycle: Something that sits on a list until "Done".
+           - Output Intent: "create_task"
+
+        2. THE REMINDER (Time-Based Alarm):
+           - Purpose: Low-effort, instantaneous triggers or memory cues.
+           - Triggers: "remind me", "ping me", "alert me", "notify me", "alarm".
+           - Exactness: Relies strictly on an exact time or countdown.
+           - Output Intent: "add_reminder"
+
+        3. OTHER INTENTS:
+           - "add_expense": If currency ($, rupees, bucks) or "spent/cost" is mentioned.
+           - "open_app": If user wants to launch software (browser, code, etc).
+           - "list_tasks": If user wants to see their current workload.
+           - "greeting": Casual hellos.
+
+        Current system time: {current_time}
+        You MUST respond ONLY with a valid JSON object.
+        
+        Task Example: {{"intent": "create_task", "entities": {{"title": "Code dashboard UI", "priority": "high", "date": "2026-03-05 09:00:00"}}}}
+        Reminder Example: {{"intent": "add_reminder", "entities": {{"title": "Call Mom", "date": "18:00:00"}}}}
+        """
+
+    def parse(self, text: str) -> dict:
+        """Parse user text via Ollama when available, fallback to local rules otherwise."""
+        if not text:
+            return {"intent": "unknown", "entities": {}, "original_text": text, "confidence": 0.0}
+
+        print(f"[NLP] Parsing: '{text}'")  # Debug log
+
+        if self.llm is None or self._llm_disabled:
+            result = self._fallback_parse(text)
+            print(f"[NLP] Fallback result - Intent: {result['intent']}, Confidence: {result.get('confidence', 0.0)}")
+            return result
+
+        prompt = f"{self._get_system_prompt()}\n\nUser: \"{text}\"\nOutput:"
+        try:
+            response = self.llm.invoke(prompt)
+            parsed_data = json.loads(response)
+
+            if "intent" not in parsed_data:
+                parsed_data["intent"] = "unknown"
+            if "entities" not in parsed_data:
+                parsed_data["entities"] = {}
+
+            parsed_data["original_text"] = text
+            parsed_data["confidence"] = 0.99
+            print(f"[NLP] LLM result - Intent: {parsed_data['intent']}, Confidence: {parsed_data['confidence']}")
+            return parsed_data
+        except Exception as e:
+            self._llm_disabled = True
+            if not self._warned_unavailable:
+                print(f"⚠️ Ollama unavailable, switching to offline NLP fallback: {e}")
+                self._warned_unavailable = True
+            result = self._fallback_parse(text)
+            print(f"[NLP] Fallback result - Intent: {result['intent']}, Confidence: {result.get('confidence', 0.0)}")
+            return result
+
+    def _normalize_text(self, text: str) -> str:
+        """Heavily normalize text for more consistent parsing"""
+        t = text.lower().strip()
+        # Normalize time markers
+        t = t.replace("p.m.", "pm").replace("a.m.", "am").replace("pm.", "pm").replace("am.", "am")
+        t = t.replace("b.m.", "pm").replace("b.m", "pm").replace("b m", "pm")
+        # Phonetic corrections
+        t = t.replace("wapan", "open").replace("warp", "open")
+        t = t.replace("toss", "task").replace("add a toss", "add task")
+        t = t.replace("had it asked", "add task").replace("i ask for", "add task for")
+        t = t.replace("foot", "food")
+        # Common typos
+        t = t.replace("5p", "5 pm").replace("5am", "5 am").replace("5pm", "5 pm")
+        t = t.replace("power point", "powerpoint").replace("our point", "powerpoint")
+        # Tanglish specific phonetic fixes
+        t = t.replace("later", "slide").replace("layer", "slide").replace("ball", "podu").replace("bow", "podu")
+
+        # Voice mis-hearing fixes for app launches (especially notepad)
+        t = re.sub(r"\b(note\s*pad|not\s*pad|notebad|not\s*bad|north\s*bad|noth\s*bad|noths\s*bad|north\s*pad)\b", "notepad", t)
+
+        # Normalize punctuation noise from speech-to-text
+        t = re.sub(r"[^a-z0-9\s]", " ", t)
+        t = re.sub(r"\s+", " ", t).strip()
+        return t
+
+    def _app_similarity(self, left: str, right: str) -> float:
+        return SequenceMatcher(None, left, right).ratio()
+
+    def _generate_ngrams(self, words: List[str], max_n: int = 3) -> List[str]:
+        phrases: List[str] = []
+        if not words:
+            return phrases
+        max_size = min(max_n, len(words))
+        for size in range(1, max_size + 1):
+            for index in range(0, len(words) - size + 1):
+                phrases.append(" ".join(words[index:index + size]))
+        return phrases
+
+    def _extract_open_app_name(self, text_lower: str) -> Optional[str]:
+        # Keep only the command segment when user says multiple clauses.
+        open_markers = ["open", "launch", "start", "run", "kholo", "pannu"]
+        marker_positions = [(marker, text_lower.find(marker)) for marker in open_markers if marker in text_lower]
+        if not marker_positions:
+            return None
+
+        marker, marker_pos = min(marker_positions, key=lambda item: item[1])
+        phrase = text_lower[marker_pos + len(marker):].strip()
+        if not phrase:
+            return None
+
+        phrase = re.split(r"\b(and|then|after that|for me|please)\b", phrase)[0].strip()
+        phrase = re.sub(r"\s+", " ", phrase)
+
+        if phrase in self._app_aliases:
+            return self._app_aliases[phrase]
+
+        # Substring checks against canonical app names and aliases
+        for app in self._app_catalog:
+            if app in phrase:
+                return app
+        for alias, app in self._app_aliases.items():
+            if alias in phrase:
+                return app
+
+        words = phrase.split()
+        candidates = self._generate_ngrams(words, max_n=3)
+        if not candidates:
+            return None
+
+        best_match: Optional[Tuple[str, float]] = None
+        for candidate in candidates:
+            for app in self._app_catalog:
+                score = self._app_similarity(candidate, app)
+                if best_match is None or score > best_match[1]:
+                    best_match = (app, score)
+            for alias, app in self._app_aliases.items():
+                score = self._app_similarity(candidate, alias)
+                if best_match is None or score > best_match[1]:
+                    best_match = (app, score)
+
+        if best_match and best_match[1] >= 0.72:
+            return best_match[0]
         return None
-    
-    def _extract_priority(self, text: str, text_lower: str, intent: str) -> str:
-        """Extract task priority"""
-        if 'high' in text_lower or 'urgent' in text_lower or 'important' in text_lower or 'asap' in text_lower:
-            return 'high'
-        elif 'low' in text_lower:
-            return 'low'
-        else:
-            return 'medium'
-    
-    def _extract_date(self, text: str, text_lower: str, intent: str) -> Optional[str]:
-        """Extract date and time references with improved precision"""
-        now = datetime.now()
+
+    def _extract_quoted_or_tail(self, text_lower: str, lead_pattern: str) -> str:
+        working = re.sub(lead_pattern, "", text_lower, count=1).strip(" .,!?")
+        quoted_match = re.search(r"['\"]([^'\"]+)['\"]", working)
+        if quoted_match:
+            return quoted_match.group(1).strip()
+        return working.strip()
+
+    def _fallback_parse(self, text: str) -> Dict[str, Any]:
+        """
+        Advanced rule-based fallback when the LLM is unavailable.
+        Uses a combination of keyword matching, regex, and dateparser.
+        """
+        raw_text = text
+        text_lower = self._normalize_text(text)
         
-        # 1. Handle explicit times (e.g., "at 5pm", "at 17:00")
-        time_match = re.search(r'\bat\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b', text_lower)
-        target_time = None
+        # 1. Pre-process numbers (e.g., "five" -> "5")
+        text_with_digits = self._convert_words_to_numbers(text_lower)
+        
+        entities: Dict[str, Any] = {}
+        confidence = 0.75
+
+        # 2. Priority: Special Commands (Short Circuits)
+        if any(word in text_lower for word in ["hello", "hi", "hey", "vanakkam", "namaskaram"]):
+            return {"intent": "greeting", "entities": {}, "original_text": raw_text, "confidence": 0.95}
+        
+        if "help" in text_lower:
+            return {"intent": "help", "entities": {}, "original_text": raw_text, "confidence": 0.95}
+
+        # 3. Intent Detection: Presentation Control (Very Specific)
+        if any(phrase in text_lower for phrase in ["next slide", "advance slide", "next page", "adutha slide"]):
+            return {"intent": "next_slide", "entities": {}, "original_text": raw_text, "confidence": 0.98}
+        if any(phrase in text_lower for phrase in ["previous slide", "prev slide", "go back slide", "paya slide"]):
+            return {"intent": "prev_slide", "entities": {}, "original_text": raw_text, "confidence": 0.98}
+
+        # 4. Intent Detection: Expenses (Triggered by currency or spent keywords)
+        expense_keywords = ["spent", "paid", "cost", "dropped", "bought", "selavu", "expense", "recorded", "kharcha", "spend", "spent"]
+        currency_keywords = ["rupees", "rs", "bucks", "dollars", "$", "inr"]
+        expense_category_hints = [
+            "food", "lunch", "dinner", "coffee", "tea", "restaurant", "transport", "uber", "taxi",
+            "bus", "train", "auto", "petrol", "fuel", "shopping", "grocery", "medicine", "doctor",
+            "rent", "recharge", "bill", "internet", "electricity", "movie"
+        ]
+        
+        amount_match = re.search(r"(\d+(?:\.\d{1,2})?)", text_with_digits)
+        has_expense_keyword = any(kw in text_lower for kw in expense_keywords)
+        has_currency = any(cur in text_lower for cur in currency_keywords)
+        has_category_hint = any(cat in text_lower for cat in expense_category_hints)
+        has_add_like = any(kw in text_lower for kw in ["add", "log", "record", "put", "spent", "pay", "paid"])
+        looks_like_task_or_reminder = any(kw in text_lower for kw in ["task", "todo", "remind", "reminder", "alarm"])
+
+        # Order-agnostic expense detection:
+        # examples: "for food add 50", "add 250 for taxi", "spent 120 tea"
+        is_likely_expense = bool(amount_match) and (
+            has_expense_keyword
+            or has_currency
+            or ((has_add_like or "for" in text_lower) and has_category_hint and not looks_like_task_or_reminder)
+        )
+
+        if is_likely_expense:
+            if amount_match:
+                entities["amount"] = float(amount_match.group(1))
+                # Extract category
+                cat_map = {
+                    "food": ["food", "lunch", "dinner", "burger", "coffee", "restaurant", "sapadu"],
+                    "transport": ["uber", "taxi", "bus", "train", "auto", "petrol"],
+                    "shopping": ["amazon", "clothes", "shopping", "gift"],
+                    "health": ["medicine", "doctor", "gym", "health"]
+                }
+                entities["category"] = "other"
+                for cat, keywords in cat_map.items():
+                    if any(kw in text_lower for kw in keywords):
+                        entities["category"] = cat
+                        break
+                return {"intent": "add_expense", "entities": entities, "original_text": raw_text, "confidence": 0.9}
+
+        # 5. Intent Detection: Reminders & Tasks (Natural Language Date Extraction)
+        # Apply Psychological Rules: Effort vs Time
+        
+        # EFFORT triggers (Tasks)
+        effort_words = ["finish", "code", "build", "study", "prepare", "debug", "write", "work", "assignment", "report", "create", "creating", "design", "make", "update", "ui", "dashboard"]
+        # TIME triggers (Reminders)
+        time_words = ["remind", "alarm", "ping", "alert", "notify", "ping", "call", "check oven", "drink water"]
+        
+        is_explicit_reminder = any(kw in text_lower for kw in ["remind", "alarm", "ping", "alert"])
+        is_high_effort = any(kw in text_lower for kw in effort_words)
+        
+        # Heuristic: If it has an exact time but NO effort words, it's a reminder.
+        # If it has effort words, it's a task, even if it has a due date.
+        is_task = is_high_effort or (any(kw in text_lower for kw in ["task", "todo", "list", "vela"]) and not is_explicit_reminder)
+        is_reminder = is_explicit_reminder or (not is_task and any(kw in text_lower for kw in ["at", "in", "am", "pm"]) and any(kw in text_lower for kw in time_words))
+        
+        if is_reminder or is_task:
+            # Try to extract date/time using dateparser
+            extracted_dt = self._extract_date_with_parser(text_with_digits)
+            if extracted_dt:
+                entities["date"] = extracted_dt.strftime('%Y-%m-%d %H:%M:%S')
+            
+            # Clean title extraction
+            entities["title"] = self._surgical_title_extraction(text_lower, is_task=is_task)
+            
+            if is_reminder and not is_high_effort:
+                return {"intent": "add_reminder", "entities": entities, "original_text": raw_text, "confidence": 0.88}
+            else:
+                # Handle list tasks vs create task
+                if any(w in text_lower for w in ["show", "list", "display", "what are"]):
+                    return {"intent": "list_tasks", "entities": {}, "original_text": raw_text, "confidence": 0.9}
+                
+                # Check for priority
+                if any(w in text_lower for w in ["urgent", "important", "high priority", "mukkiyam"]):
+                    entities["priority"] = "high"
+                else:
+                    entities["priority"] = "medium"
+                return {"intent": "create_task", "entities": entities, "original_text": raw_text, "confidence": 0.85}
+
+        # 6. Intent Detection: Apps / Search (More Robust)
+        # Context-aware computer-use intents
+        if re.match(r"^(milo[\s,]+)?(type|write|enter)\b", text_lower):
+            typed_text = self._extract_quoted_or_tail(text_lower, r"^(milo[\s,]+)?(type|write|enter)\b")
+            if typed_text:
+                entities["text"] = typed_text
+                return {"intent": "computer_type", "entities": entities, "original_text": raw_text, "confidence": 0.94}
+
+        if re.search(r"\b(click|tap)\b", text_lower) and re.search(r"\b(on|link|button|text)\b", text_lower):
+            target = text_lower
+            target = re.sub(r"\b(click|tap)\b", "", target)
+            target = re.sub(r"\b(on|the|link|button|text|for|please)\b", " ", target)
+            target = re.sub(r"\s+", " ", target).strip(" .,!?")
+            quoted_match = re.search(r"['\"]([^'\"]+)['\"]", text_lower)
+            if quoted_match:
+                target = quoted_match.group(1).strip()
+            if target:
+                entities["target_text"] = target
+                return {"intent": "computer_click_text", "entities": entities, "original_text": raw_text, "confidence": 0.9}
+
+        if re.search(r"\b(search|find)\b", text_lower) and re.search(r"\b(for|in browser|in chrome|in brave|in edge|in firefox|here)\b", text_lower):
+            query = text_lower
+            query = re.sub(r"\b(search|find)\b", "", query, count=1)
+            query = re.sub(r"\b(for|in browser|in chrome|in brave|in edge|in firefox|here|please)\b", " ", query)
+            query = re.sub(r"\s+", " ", query).strip(" .,!?")
+            if query:
+                entities["query"] = query
+                return {"intent": "computer_search", "entities": entities, "original_text": raw_text, "confidence": 0.92}
+
+        # Check Search first to allow "open browser and search..."
+        if any(kw in text_lower for kw in ["search", "google", "find", "thedu", "sollu"]):
+            query = text_lower
+            for kw in ["search for", "search what is", "search about", "search", "google", "find", "thedu", "sollu"]:
+                query = query.replace(kw, "")
+            query = query.strip(" ?.")
+            if query:
+                entities["query"] = query
+                return {"intent": "google_search", "entities": entities, "original_text": raw_text, "confidence": 0.9}
+
+        if any(kw in text_lower for kw in ["open", "launch", "start", "run", "kholo", "pannu"]):
+            app_name = self._extract_open_app_name(text_lower)
+            if app_name:
+                entities["app_name"] = app_name
+                return {"intent": "open_app", "entities": entities, "original_text": raw_text, "confidence": 0.95}
+
+        # 7. Fallback to Chitchat
+        return {"intent": "chitchat", "entities": {}, "original_text": raw_text, "confidence": 0.5}
+
+    def _convert_words_to_numbers(self, text: str) -> str:
+        """Convert 'five' to '5', etc. using word2number"""
+        words = text.split()
+        new_words = []
+        i = 0
+        while i < len(words):
+            # Try to find sequences of number words
+            try:
+                # This is a bit simplified; w2n.word_to_num can be aggressive
+                # We only want to convert if it's clearly a number
+                potential_num = words[i]
+                if potential_num in ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"]:
+                    new_words.append(str(w2n.word_to_num(potential_num)))
+                else:
+                    new_words.append(potential_num)
+            except:
+                new_words.append(words[i])
+            i += 1
+        return " ".join(new_words)
+
+    def _extract_date_with_parser(self, text: str) -> Optional[datetime]:
+        """Use dateparser to find dates in text."""
+        lower_text = text.lower().strip()
+
+        # Handle bare-hour schedule phrases explicitly (e.g., "tomorrow 4", "today 9").
+        bare_hour = re.search(r"\b(today|tomorrow|tonight)\s+(\d{1,2})(?::(\d{2}))?\b", lower_text)
+        if bare_hour:
+            day_word = bare_hour.group(1)
+            hour = int(bare_hour.group(2))
+            minute = int(bare_hour.group(3) or "0")
+
+            now = datetime.now()
+            day_offset = 1 if day_word == "tomorrow" else 0
+
+            # Prefer PM for ambiguous spoken hour in common task planning.
+            if 1 <= hour <= 7:
+                hour += 12
+
+            target = (now + timedelta(days=day_offset)).replace(
+                hour=hour % 24,
+                minute=minute,
+                second=0,
+                microsecond=0,
+            )
+            if day_word in ("today", "tonight") and target <= now:
+                target += timedelta(days=1)
+            return target
+
+        # Find time-related keywords to narrow down the search
+        time_keywords = ["tomorrow", "today", "tonight", "next", "in", "at", "am", "pm", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+        
+        # Check if any time keyword exists
+        if not any(kw in text.lower() for kw in time_keywords):
+            return None
+
+        # Surgical cleaning of the date string to help dateparser
+        # We try to extract phrases starting with 'at', 'in', 'on', or specific time words
+        settings = {'PREFER_DATES_FROM': 'future', 'RELATIVE_BASE': datetime.now()}
+        
+        # Try full text first
+        dt = dateparser.parse(text, settings=settings)
+        if dt:
+            return dt
+            
+        return None
+
+    def _surgical_title_extraction(self, text: str, is_task: bool = False) -> str:
+        """
+        Surgically removes command words and time markers to leave only the core title.
+        Fixes bugs like 'interview pmm' from 'interview at 5pm'.
+        """
+        source_text = text.lower()
+        t = source_text
+        
+        # 1. Remove obvious command prefixes
+        prefixes = [
+            r"\badd task to\b", r"\badd task for\b", r"\bcreate task for\b", r"\bset reminder for\b",
+            r"\bi need to\b", r"\bi have to\b", r"\bremind me to\b", r"\bput\b", r"\badd\b", r"\btask\b",
+            r"\bvela\b", r"\bpannu\b", r"\bpodu\b"
+        ]
+        for p in prefixes:
+            t = re.sub(p, "", t)
+            
+        # 2. Remove time/date markers surgically
+        # Remove "at X pm", "at X:XX", "tomorrow", "today", etc.
+        t = re.sub(r"\bat\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b", "", t)
+        t = re.sub(r"\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b", "", t)
+        t = re.sub(r"\bin\s+(?:\d+|a|an)\s+(?:minute|hour|day)s?\b", "", t)
+        t = re.sub(r"\b(tomorrow|today|tonight|next week|next monday|next tuesday|next wednesday|next thursday|next friday|next saturday|next sunday)\b", "", t)
+
+        # Handle bare-hour forms like "tomorrow 4" / "today 9" where hour has no am/pm.
+        if re.search(r"\b(tomorrow|today|tonight|next)\b", source_text):
+            t = re.sub(r"\b\d{1,2}(?::\d{2})?\b", "", t)
+        
+        # 3. Final cleanup
+        t = re.sub(r"\b(for|to|at|on|with|my|a|an|the)\b", "", t)
+        t = re.sub(r"\s+", " ", t).strip(" ,.-")
+        
+        # Bug fix: if "interview" became "interview pmm", it means "pm" wasn't removed correctly
+        # We specifically check for dangling 'pm' or 'am' at the end of words
+        t = re.sub(r"(\w+)(pm|am)\b", r"\1", t)
+        
+        return t or "Untitled"
+
+    def _extract_title_for_reminder(self, text_lower: str) -> str:
+        title = text_lower
+        title = re.sub(r"\b(remind me to|remind me|set reminder|add reminder|wake me up with an alarm|alarm)\b", "", title)
+        # Remove time patterns like "in 5 minutes", "at 5pm"
+        title = re.sub(r"\bin\s+\d+\s*(?:minute|minutes|hour|hours|day|days)\b", "", title)
+        title = re.sub(r"\bat\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b", "", title)
+        title = re.sub(r"\s+", " ", title).strip(" ,.-")
+        return title or "reminder"
+
+    def _extract_title_for_task(self, text_lower: str) -> str:
+        title = text_lower
+        # 1. Remove task command phrases
+        title = re.sub(r"\b(i have to|i need to|please|milo|hey|put that on my list|add to my list|add task|create task|new task|task|todo|to do|to-do|make it|set a task|set task|vela|panu|podu|next|previous|first|last)\b", "", title)
+        # 2. Remove specific date/time markers
+        title = re.sub(r"\bin\s+\d+\s*(?:minute|minutes|hour|hours|day|days)\b", "", title)
+        title = re.sub(r"\b(today|tomorrow|tonight)\b", "", title)
+        title = re.sub(r"\bon\s+\d{4}-\d{2}-\d{2}\b", "", title)
+        # Enhanced time removal (handles "5pm", "5:30", "at 5")
+        title = re.sub(r"\bat\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b", "", title)
+        title = re.sub(r"\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b", "", title)
+        # 3. Cleanup particles
+        title = re.sub(r"\b(a|an|the)\b", "", title)
+        title = re.sub(r"\b(to|for)\b", "", title, count=1)
+        title = re.sub(r"\b(urgent|asap|important|high priority|low priority|zaroori)\b", "", title)
+        title = re.sub(r"\s+", " ", title).strip(" ,.-")
+        return title or "untitled task"
+
+    def _extract_task_datetime(self, text_lower: str) -> str:
+        now = datetime.now()
+
+        # Relative durations: "in 2 hours"
+        relative = self._extract_relative_datetime(text_lower)
+        if relative:
+            return relative
+
+        # Explicit date: "on 2026-03-01"
+        date_match = re.search(r"\bon\s*(\d{4}-\d{2}-\d{2})\b", text_lower)
+        # Flexible time match: "at 5", "at 5pm", "5:30pm", "at 5:30"
+        time_match = re.search(r"(?:at\s*)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b", text_lower)
+        if not time_match:
+            # Fallback for "at 5" without am/pm
+            time_match = re.search(r"\bat\s*(\d{1,2})(?::(\d{2}))?\b", text_lower)
+        if not time_match:
+            # Fallback for bare-hour with day marker: "tomorrow 4", "today 9"
+            time_match = re.search(r"\b(?:today|tomorrow|tonight)\s+(\d{1,2})(?::(\d{2}))?\b", text_lower)
+
+        if date_match:
+            date_str = date_match.group(1)
+            hour, minute = 9, 0
+            if time_match:
+                hour = int(time_match.group(1))
+                minute = int(time_match.group(2) or "0")
+                meridiem = time_match.group(3) if len(time_match.groups()) >= 3 else None
+                if meridiem == "pm" and hour < 12: hour += 12
+                if meridiem == "am" and hour == 12: hour = 0
+            try:
+                target = datetime.strptime(f"{date_str} {hour:02d}:{minute:02d}:00", "%Y-%m-%d %H:%M:%S")
+                return target.strftime('%Y-%m-%d %H:%M:%S')
+            except ValueError: return ""
+
+        # Today/Tomorrow/Tonight
+        day_offset = 0
+        if "tomorrow" in text_lower: day_offset = 1
+        elif "today" in text_lower or "tonight" in text_lower: day_offset = 0
+        elif not time_match: return ""
+
+        hour, minute = 9, 0
         if time_match:
             hour = int(time_match.group(1))
-            minute = int(time_match.group(2)) if time_match.group(2) else 0
-            meridiem = time_match.group(3)
-            
-            if meridiem == 'pm' and hour < 12:
-                hour += 12
-            elif meridiem == 'am' and hour == 12:
-                hour = 0
-            
-            target_time = (hour, minute)
+            minute = int(time_match.group(2) or "0")
+            meridiem = time_match.group(3) if len(time_match.groups()) >= 3 else None
+            if meridiem == "pm" and hour < 12: hour += 12
+            if meridiem == "am" and hour == 12: hour = 0
+            if meridiem is None:
+                # Prefer evening interpretation for ambiguous spoken schedules like "tomorrow 4".
+                if 1 <= hour <= 7:
+                    hour += 12
 
-        # 2. Handle relative offsets (e.g., "in 2 hours", "in 10 seconds")
-        rel_match = re.search(r'\bin\s+(\d+)\s+(second|sec|hour|min|minute|day)s?\b', text_lower)
-        if rel_match:
-            amount = int(rel_match.group(1))
-            unit = rel_match.group(2)
-            if 'hour' in unit:
-                return (now + timedelta(hours=amount)).strftime('%Y-%m-%d %H:%M:%S')
-            elif 'min' in unit:
-                return (now + timedelta(minutes=amount)).strftime('%Y-%m-%d %H:%M:%S')
-            elif 'day' in unit:
-                return (now + timedelta(days=amount)).strftime('%Y-%m-%d %H:%M:%S')
-            elif 'second' in unit or 'sec' in unit:
-                return (now + timedelta(seconds=amount)).strftime('%Y-%m-%d %H:%M:%S')
+        target = (now + timedelta(days=day_offset)).replace(hour=hour, minute=minute, second=0, microsecond=0)
+        # If time passed today and no specific day mentioned, assume tomorrow
+        if day_offset == 0 and time_match and target <= now and "today" not in text_lower:
+            target += timedelta(days=1)
 
-        # 3. Handle specific days
-        base_date = now
-        if 'tomorrow' in text_lower:
-            base_date = now + timedelta(days=1)
-        elif 'next week' in text_lower:
-            base_date = now + timedelta(weeks=1)
-        elif 'today' in text_lower:
-            base_date = now
-        else:
-            # Check for date patterns like YYYY-MM-DD
-            date_match = re.search(r'(\d{4})-(\d{2})-(\d{2})', text_lower)
-            if date_match:
-                try:
-                    base_date = datetime.strptime(date_match.group(0), '%Y-%m-%d')
-                except: pass
+        return target.strftime('%Y-%m-%d %H:%M:%S')
 
-        # Combine date and time
-        if target_time:
-            final_dt = base_date.replace(hour=target_time[0], minute=target_time[1], second=0)
-            return final_dt.strftime('%Y-%m-%d %H:%M:%S')
-        
-        # If no specific time was mentioned, default to 9 AM if it's tomorrow/next week
-        if 'tomorrow' in text_lower or 'next week' in text_lower or 'today' not in text_lower:
-            return base_date.replace(hour=9, minute=0, second=0).strftime('%Y-%m-%d %H:%M:%S')
+    def _extract_relative_datetime(self, text_lower: str) -> str:
+        now = datetime.now()
+        if "one hour" in text_lower:
+            return (now + timedelta(hours=1)).strftime('%Y-%m-%d %H:%M:%S')
 
-        return base_date.strftime('%Y-%m-%d %H:%M:%S')
-    
-    def _extract_task_id(self, text: str, text_lower: str, intent: str) -> Optional[int]:
-        """Extract task ID or number"""
-        if intent not in ['complete_task', 'delete_task', 'log_habit']:
-            return None
-        
-        # Look for a number, preferably after keywords like "task" or just the first number
-        number_match = re.search(r'\b(?:task|item|number)?\s*#?(\d+)\b', text_lower)
-        if number_match:
-            return int(number_match.group(1))
-        
-        return None
-    
-    def get_response_template(self, intent: str) -> str:
-        """Get a response template for an intent"""
-        templates = {
-            'create_task': "Task '{title}' has been created.",
-            'list_tasks': "Here are your tasks:",
-            'complete_task': "Task {task_id} marked as complete.",
-            'delete_task': "Task {task_id} has been deleted.",
-            'add_expense': "Expense of ${amount} added to {category}.",
-            'add_income': "Income of ${amount} added.",
-            'check_balance': "Your current balance is ${balance}.",
-            'greeting': "Hello! I'm MILO, your offline assistant. How can I help you?",
-            'goodbye': "Goodbye! Have a great day!",
-            'help': "I can help you with tasks, finances, and habits. Try saying 'create a task' or 'check balance'.",
-            'unknown': "I'm not sure I understand. Can you rephrase that?",
-        }
-        return templates.get(intent, "I'm processing that for you.")
-    
-    def get_intent_description(self, intent: str) -> str:
-        """Get a human-readable description of an intent"""
-        descriptions = {
-            'create_task': 'Creating a new task',
-            'list_tasks': 'Listing all tasks',
-            'complete_task': 'Marking task as complete',
-            'delete_task': 'Deleting a task',
-            'add_expense': 'Adding an expense',
-            'add_income': 'Adding income',
-            'check_balance': 'Checking account balance',
-            'add_habit': 'Adding a new habit',
-            'log_habit': 'Logging habit completion',
-            'greeting': 'Greeting',
-            'goodbye': 'Farewell',
-            'help': 'Requesting help',
-            'unknown': 'Unknown command',
-        }
-        return descriptions.get(intent, 'Processing command')
+        match = re.search(r"in\s+(\d+)\s+(minute|minutes|hour|hours|day|days)", text_lower)
+        if not match: return ""
+
+        value, unit = int(match.group(1)), match.group(2)
+        if "minute" in unit: target = now + timedelta(minutes=value)
+        elif "hour" in unit: target = now + timedelta(hours=value)
+        else: target = now + timedelta(days=value)
+        return target.strftime('%Y-%m-%d %H:%M:%S')

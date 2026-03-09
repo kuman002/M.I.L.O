@@ -4,9 +4,10 @@ Financial tracking and budgeting
 """
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QLineEdit,
-    QTableWidget, QTableWidgetItem, QComboBox, QMessageBox, QHeaderView
+    QTableWidget, QTableWidgetItem, QComboBox, QMessageBox, QHeaderView, QFrame, QStyle
 )
 from PyQt5.QtGui import QFont, QColor
+from PyQt5.QtCore import Qt
 from gui.base_tab import BaseTab
 from gui.dashboards import FinanceDashboardChart, ExpenseByCategoryChart, BudgetStatusChart
 
@@ -17,11 +18,23 @@ class FinancesTab(BaseTab):
     def setup_ui(self):
         """Build the finances UI"""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(15)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
         
         # Add transaction section
+        add_card = QFrame()
+        add_card.setObjectName("panelCard")
+        add_card.setStyleSheet("QFrame#panelCard { border-left: 3px solid #34D399; }")
+        add_card_layout = QVBoxLayout(add_card)
+        add_card_layout.setContentsMargins(14, 12, 14, 12)
+        add_card_layout.setSpacing(10)
+
+        add_title = QLabel("💰 Add Transaction")
+        add_title.setObjectName("sectionTitle")
+        add_card_layout.addWidget(add_title)
+
         add_layout = QHBoxLayout()
+        add_layout.setSpacing(10)
         
         self.trans_type = QComboBox()
         self.trans_type.addItems(["Income", "Expense"])
@@ -39,14 +52,23 @@ class FinancesTab(BaseTab):
         add_layout.addWidget(self.trans_category)
         
         add_btn = QPushButton("➕ Add")
+        add_btn.setObjectName("primary")
         add_btn.clicked.connect(self.add_transaction)
         add_layout.addWidget(add_btn)
-        
-        layout.addLayout(add_layout)
+
+        add_card_layout.addLayout(add_layout)
+        layout.addWidget(add_card)
         
         # Main content layout - Charts on left, Table on right
+        content_card = QFrame()
+        content_card.setObjectName("panelCard")
+        content_card.setStyleSheet("QFrame#panelCard { border-left: 3px solid #2DD4BF; }")
+        content_card_layout = QVBoxLayout(content_card)
+        content_card_layout.setContentsMargins(12, 12, 12, 12)
+        content_card_layout.setSpacing(10)
+
         content_layout = QHBoxLayout()
-        content_layout.setSpacing(15)
+        content_layout.setSpacing(12)
         
         # Left side - Charts (vertical layout)
         charts_container = QVBoxLayout()
@@ -96,7 +118,8 @@ class FinancesTab(BaseTab):
         
         content_layout.addLayout(table_container, 1)  # Table takes 1/3 of width
         
-        layout.addLayout(content_layout)
+        content_card_layout.addLayout(content_layout)
+        layout.addWidget(content_card)
         
         self.load_transactions()
     
@@ -139,6 +162,7 @@ class FinancesTab(BaseTab):
                 amount = trans.get('amount', 0)
                 amount_item = QTableWidgetItem(f"₹{amount:.2f}")
                 amount_item.setFont(QFont('Arial', 11, QFont.Bold))
+                amount_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 if trans_type == "Income":
                     amount_item.setForeground(QColor('#10b981'))  # Green
                 else:
@@ -148,14 +172,19 @@ class FinancesTab(BaseTab):
                 # Category
                 cat_item = QTableWidgetItem(trans.get('category', '').title())
                 cat_item.setFont(QFont('Arial', 10))
+                cat_item.setTextAlignment(Qt.AlignCenter)
                 self.trans_table.setItem(i, 2, cat_item)
                 
                 # Date with calendar icon
                 date_item = QTableWidgetItem(f"📅 {trans.get('date', '')[:10]}")
                 date_item.setFont(QFont('Arial', 9))
+                date_item.setTextAlignment(Qt.AlignCenter)
                 self.trans_table.setItem(i, 3, date_item)
                 
-                delete_btn = QPushButton("🗑️")
+                delete_btn = QPushButton()
+                delete_btn.setIcon(self.style().standardIcon(QStyle.SP_TrashIcon))
+                delete_btn.setToolTip("Delete transaction")
+                delete_btn.setFixedSize(74, 30)
                 delete_btn.clicked.connect(lambda checked, id=trans.get('id'): self.delete_transaction(id))
                 self.trans_table.setCellWidget(i, 4, delete_btn)
             

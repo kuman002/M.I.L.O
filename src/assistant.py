@@ -5,13 +5,16 @@ Integrates all modules and handles user commands
 
 from typing import Dict, Callable, Optional
 from datetime import datetime, timedelta
-from database import Database
+from database.database import Database
 from managers.task_manager import TaskManager
 from managers.finance_manager import FinanceManager
 from managers.habit_manager import HabitManager
 from managers.app_launcher import AppLauncher
+from managers.suggestion_engine import MiloSuggestionEngine
 from nlp.nlp_parser import NLPParser
 from voice.text_to_speech import TextToSpeech
+from automation.rpa_service import RPAService
+from integrations.google_service import GoogleService
 
 
 class MILOAssistant:
@@ -35,6 +38,12 @@ class MILOAssistant:
         # Use shared TTS instance so only one pyttsx3 engine is active
         self.tts = tts or TextToSpeech()
         
+        # New automation services
+        self.rpa = RPAService()
+        self.google = GoogleService()
+        self.suggestion_engine = MiloSuggestionEngine()
+        
+        self.last_action = 'none'
         self.on_response_callback: Optional[Callable[[str], None]] = None
     
     def process_command(self, text: str) -> Dict:
@@ -51,6 +60,10 @@ class MILOAssistant:
         parsed = self.parser.parse(text)
         intent = parsed['intent']
         entities = parsed['entities']
+        
+        # Track last action for ML context
+        if intent not in ['unknown', 'chitchat', 'greeting', 'help']:
+            self.last_action = intent
         
         response = {
             'intent': intent,
@@ -199,6 +212,13 @@ class MILOAssistant:
                 response['message'] = "Hello! I'm MILO, your offline assistant. How can I help you today?"
                 response['success'] = True
             
+            elif intent == 'time_query':
+                from datetime import datetime
+                current_time = datetime.now().strftime("%I:%M %p")
+                current_date = datetime.now().strftime("%A, %B %d, %Y")
+                response['message'] = f"The current time is {current_time} on {current_date}."
+                response['success'] = True
+            
             elif intent == 'goodbye':
                 response['message'] = "Goodbye! Have a great day!"
                 response['success'] = True
@@ -209,14 +229,17 @@ class MILOAssistant:
 - Finances: Add expenses/income, check balance
 - Habits: Track habits and view statistics
 - Applications: Open apps, files, folders, or websites
+- Computer Use: Type text, search in active browser, click text on screen
 - Say 'create a task' or 'check balance' to get started"""
                 response['message'] = help_text
                 response['success'] = True
             
             elif intent == 'open_app':
-                app_name = entities.get('title', '')
+                app_name = entities.get('app_name', '')
+                print(f"[Assistant] Opening app: '{app_name}'")  # Debug log
                 if app_name:
                     result = self.app_launcher.open_app(app_name)
+                    print(f"[AppLauncher] Result: {result}")  # Debug log
                     response['message'] = result['message']
                     response['success'] = result['success']
                 else:
@@ -254,6 +277,94 @@ class MILOAssistant:
                     response['message'] = "Please specify the website."
                     response['success'] = False
             
+            elif intent == 'google_search':
+                query = entities.get('query', '')
+                if query:
+                    import webbrowser
+                    import urllib.parse
+                    search_url = f"https://www.google.com/search?q={urllib.parse.quote(query)}"
+                    webbrowser.open(search_url)
+                    response['message'] = f"Searching Google for: {query}"
+                    response['success'] = True
+                else:
+                    response['message'] = "What would you like me to search for?"
+                    response['success'] = False
+
+            elif intent == 'computer_type':
+                typed_text = entities.get('text', '').strip()
+                if typed_text:
+                    result = self.rpa.type_text(typed_text)
+                    response['message'] = result.get('message', 'Typing completed.')
+                    response['success'] = bool(result.get('success'))
+                    response['data'] = result
+                else:
+                    response['message'] = "Please tell me what to type."
+                    response['success'] = False
+
+            elif intent == 'computer_search':
+                query = entities.get('query', '').strip()
+                if query:
+                    result = self.rpa.search_in_browser_context(query)
+                    response['message'] = result.get('message', 'Search completed.')
+                    response['success'] = bool(result.get('success'))
+                    response['data'] = result
+                else:
+                    response['message'] = "Please tell me what to search for."
+                    response['success'] = False
+
+            elif intent == 'computer_click_text':
+                target_text = entities.get('target_text', '').strip()
+                if target_text:
+                    result = self.rpa.click_text(target_text)
+                    response['message'] = result.get('message', 'Click action completed.')
+                    response['success'] = bool(result.get('success'))
+                    response['data'] = result
+                else:
+                    response['message'] = "Please tell me which text to click."
+                    response['success'] = False
+
+            elif intent == 'setup_env':
+                msg = self.rpa.setup_coding_environment()
+                response['message'] = msg
+                response['success'] = True
+
+            elif intent == 'play_music':
+                msg = self.rpa.play_spotify_lofi()
+                response['message'] = msg
+                response['success'] = True
+
+            elif intent == 'read_emails':
+                result = self.google.get_unread_emails_summary()
+                response['message'] = result['message']
+                response['success'] = result['success']
+                response['data'] = result.get('emails', [])
+
+            elif intent == 'next_slide':
+                msg = self.rpa.next_slide()
+                response['message'] = msg
+                response['success'] = True
+
+            elif intent == 'prev_slide':
+                msg = self.rpa.prev_slide()
+                response['message'] = msg
+                response['success'] = True
+            
+            elif intent == 'chitchat':
+                # Friendly responses for casual conversation
+                chitchat_responses = [
+                    "I'm doing well, thanks for asking! How can I assist you?",
+                    "I'm here and ready to help!",
+                    "Not much, just waiting to help you with tasks, finances, or habits!",
+                    "I'm MILO (Managing Information & Lifestyle Optimizer), your assistant. What would you like to do?"
+                ]
+                import random
+                response['message'] = random.choice(chitchat_responses)
+                response['success'] = True
+            
+            elif intent == 'unknown':
+                response['message'] = "I heard you, but I'm not sure what you want me to do. Try commands like:\n• 'Add task'\n• 'Check balance'\n• 'Add expense'\n• Say 'help' for more options."
+                response['success'] = False
+            
             else:
                 response['message'] = "I'm not sure I understand. Try saying 'help' for available commands."
                 response['success'] = False
@@ -266,9 +377,12 @@ class MILOAssistant:
         if self.on_response_callback:
             self.on_response_callback(response['message'])
         
-        # Speak response if TTS is available
-        if self.tts.is_available() and response['message']:
-            self.tts.speak(response['message'])
+        # Speak response (TextToSpeech handles worker auto-recovery internally)
+        if self.tts and response['message']:
+            try:
+                self.tts.speak(response['message'])
+            except Exception as e:
+                print(f"[TTS] Speak failed: {e}")
         
         return response
     
@@ -280,11 +394,18 @@ class MILOAssistant:
         habits = self.habit_manager.get_all_habit_stats()
         patterns = self.habit_manager.analyze_patterns()
         
+        # Get ML recommendation
+        recommendation = self.suggestion_engine.get_smart_suggestion(
+            current_pending_tasks=len(pending_tasks),
+            last_action_str=self.last_action
+        )
+        
         return {
             'pending_tasks_count': len(pending_tasks),
             'upcoming_tasks': upcoming_tasks[:5],
             'balance': finance_summary['balance'],
             'total_expenses': finance_summary['total_expenses'],
             'habits': habits,
-            'suggestions': patterns.get('suggestions', [])
+            'suggestions': patterns.get('suggestions', []),
+            'ml_recommendation': recommendation
         }

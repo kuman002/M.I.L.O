@@ -1,6 +1,7 @@
 PyQt5>=5.15.0
 pyttsx3>=2.90
 openai-whisper
+faster-whisper
 torch
 torchaudio
 SpeechRecognition>=3.10.0
@@ -11,4 +12,17 @@ pywin32>=306; sys_platform == 'win32'
 sqlite3-binary>=0.1.0; sys_platform == 'linux'
 sounddevice
 numpy
+cryptography
+opencv-python
+pveagle
+python-dotenv
+thefuzz[speedup]
+dateparser
+word2number
+langchain-community
+langchain-ollama
+scikit-learn>=1.2.0
+pyautogui
+pygetwindow
+easyocr
 

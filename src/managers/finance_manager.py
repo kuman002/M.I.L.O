@@ -71,6 +71,30 @@ class FinanceManager:
             return ""
         return description.strip()[:500]  # Max 500 characters
 
+    def _decrypt_transaction(self, trans: Dict) -> Dict:
+        """Decrypt encrypted transaction fields when present"""
+        if not trans:
+            return trans
+        trans["transaction_type"] = self.db.decrypt_text(trans.get("transaction_type"))
+        trans["category"] = self.db.decrypt_text(trans.get("category"))
+        trans["description"] = self.db.decrypt_text(trans.get("description"))
+        amount = trans.get("amount")
+        try:
+            trans["amount"] = float(amount)
+        except (TypeError, ValueError):
+            trans["amount"] = 0.0
+        return trans
+
+    def _in_date_range(self, date_str: str, start: str = None, end: str = None) -> bool:
+        if not date_str:
+            return False
+        date_only = date_str[:10]
+        if start and date_only < start:
+            return False
+        if end and date_only >= end:
+            return False
+        return True
+
     def add_expense(self, category: str, amount: float, description: str = "") -> Dict:
         """Add an expense with validation"""
         # Validate amount
@@ -142,25 +166,18 @@ class FinanceManager:
         cache_key = f"transactions_{limit}_{transaction_type}_{category}"
 
         def _query_transactions():
-            cursor = self.db.conn.cursor()
-            
-            conditions = []
-            params = []
+            transactions = self.db.get_all_transactions()
 
-            if transaction_type:
-                conditions.append("transaction_type = ?")
-                params.append(transaction_type)
+            filtered = []
+            for trans in transactions:
+                trans = self._decrypt_transaction(trans)
+                if transaction_type and (trans.get("transaction_type") or "").lower() != transaction_type.lower():
+                    continue
+                if category and (trans.get("category") or "").lower() != category.lower():
+                    continue
+                filtered.append(trans)
 
-            if category:
-                conditions.append("category = ?")
-                params.append(category)
-
-            where_clause = " AND ".join(conditions) if conditions else "1=1"
-            query = f"SELECT * FROM finances WHERE {where_clause} ORDER BY date DESC LIMIT ?"
-            params.append(limit)
-
-            cursor.execute(query, params)
-            return [dict(row) for row in cursor.fetchall()]
+            return filtered[:limit]
 
         return self._get_cached_data(cache_key, _query_transactions)
 
@@ -169,22 +186,16 @@ class FinanceManager:
         cache_key = f"expenses_by_category_{limit}"
 
         def _query_expenses():
-            cursor = self.db.conn.cursor()
-            query = """
-                SELECT category, SUM(amount) as total
-                FROM finances
-                WHERE transaction_type = 'expense'
-                GROUP BY category
-                ORDER BY total DESC
-            """
-            
-            if limit:
-                query += " LIMIT ?"
-                cursor.execute(query, (limit,))
-            else:
-                cursor.execute(query)
+            totals = {}
+            for trans in self.db.get_all_transactions():
+                trans = self._decrypt_transaction(trans)
+                if (trans.get("transaction_type") or "").lower() != "expense":
+                    continue
+                category = trans.get("category") or "Other"
+                totals[category] = totals.get(category, 0.0) + float(trans.get("amount") or 0)
 
-            return cursor.fetchall()
+            result = sorted(totals.items(), key=lambda x: x[1], reverse=True)
+            return result[:limit] if limit else result
 
         return self._get_cached_data(cache_key, _query_expenses)
 
@@ -193,22 +204,16 @@ class FinanceManager:
         cache_key = f"income_by_category_{limit}"
 
         def _query_income():
-            cursor = self.db.conn.cursor()
-            query = """
-                SELECT category, SUM(amount) as total
-                FROM finances
-                WHERE transaction_type = 'income'
-                GROUP BY category
-                ORDER BY total DESC
-            """
-            
-            if limit:
-                query += " LIMIT ?"
-                cursor.execute(query, (limit,))
-            else:
-                cursor.execute(query)
+            totals = {}
+            for trans in self.db.get_all_transactions():
+                trans = self._decrypt_transaction(trans)
+                if (trans.get("transaction_type") or "").lower() != "income":
+                    continue
+                category = trans.get("category") or "Other"
+                totals[category] = totals.get(category, 0.0) + float(trans.get("amount") or 0)
 
-            return cursor.fetchall()
+            result = sorted(totals.items(), key=lambda x: x[1], reverse=True)
+            return result[:limit] if limit else result
 
         return self._get_cached_data(cache_key, _query_income)
 
@@ -218,72 +223,50 @@ class FinanceManager:
 
         def _calculate_summary():
             cutoff_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
-            cursor = self.db.conn.cursor()
-
-            # Get period statistics
-            cursor.execute("""
-                SELECT
-                    transaction_type,
-                    COUNT(*) as count,
-                    SUM(amount) as total
-                FROM finances
-                WHERE date >= ?
-                GROUP BY transaction_type
-            """, (cutoff_date,))
-
-            stats_by_type = {row[0]: {'count': row[1], 'total': row[2]} for row in cursor.fetchall()}
-
-            income_stats = stats_by_type.get('income', {'count': 0, 'total': 0})
-            expense_stats = stats_by_type.get('expense', {'count': 0, 'total': 0})
-
-            total_income = income_stats['total'] or 0
-            total_expenses = expense_stats['total'] or 0
-            net = total_income - total_expenses
-
-            # Get breakdown by category
-            cursor.execute("""
-                SELECT
-                    category,
-                    transaction_type,
-                    SUM(amount) as total,
-                    COUNT(*) as count
-                FROM finances
-                WHERE date >= ?
-                GROUP BY category, transaction_type
-                ORDER BY transaction_type, total DESC
-            """, (cutoff_date,))
-
+            total_income = 0.0
+            total_expenses = 0.0
+            income_count = 0
+            expense_count = 0
             category_breakdown = {}
-            for row in cursor.fetchall():
-                cat, trans_type, total, count = row
-                if cat not in category_breakdown:
-                    category_breakdown[cat] = {}
-                category_breakdown[cat][trans_type] = {'total': total, 'count': count}
+            top_spending_map = {}
 
-            # Get top spending categories
-            cursor.execute("""
-                SELECT category, SUM(amount) as total
-                FROM finances
-                WHERE date >= ? AND transaction_type = 'expense'
-                GROUP BY category
-                ORDER BY total DESC
-                LIMIT 5
-            """, (cutoff_date,))
-            top_spending = cursor.fetchall()
+            for trans in self.db.get_all_transactions():
+                trans = self._decrypt_transaction(trans)
+                if not self._in_date_range(trans.get("date", ""), start=cutoff_date):
+                    continue
+                trans_type = (trans.get("transaction_type") or "").lower()
+                category = trans.get("category") or "Other"
+                amount = float(trans.get("amount") or 0)
+
+                category_breakdown.setdefault(category, {})
+                stats = category_breakdown[category].setdefault(trans_type, {'total': 0.0, 'count': 0})
+                stats['total'] += amount
+                stats['count'] += 1
+
+                if trans_type == "income":
+                    total_income += amount
+                    income_count += 1
+                elif trans_type == "expense":
+                    total_expenses += amount
+                    expense_count += 1
+                    top_spending_map[category] = top_spending_map.get(category, 0.0) + amount
+
+            top_spending = sorted(top_spending_map.items(), key=lambda x: x[1], reverse=True)[:5]
+            net = total_income - total_expenses
 
             return {
                 'period_days': days,
                 'balance': self.db.get_balance(),
                 'total_income': total_income,
-                'income_count': income_stats['count'],
+                'income_count': income_count,
                 'total_expenses': total_expenses,
-                'expense_count': expense_stats['count'],
+                'expense_count': expense_count,
                 'net_change': net,
                 'savings_rate': (net / total_income * 100) if total_income > 0 else 0,
                 'category_breakdown': category_breakdown,
                 'top_spending_categories': top_spending,
-                'avg_expense': (total_expenses / expense_stats['count']) if expense_stats['count'] > 0 else 0,
-                'avg_income': (total_income / income_stats['count']) if income_stats['count'] > 0 else 0
+                'avg_expense': (total_expenses / expense_count) if expense_count > 0 else 0,
+                'avg_income': (total_income / income_count) if income_count > 0 else 0
             }
 
         return self._get_cached_data(cache_key, _calculate_summary)
@@ -299,18 +282,25 @@ class FinanceManager:
         if transaction_type:
             cursor.execute("""
                 SELECT * FROM finances
-                WHERE (description LIKE ? OR category LIKE ?)
-                AND transaction_type = ?
+                WHERE transaction_type = ?
                 ORDER BY date DESC
-            """, (search_term, search_term, transaction_type))
+            """, (transaction_type,))
         else:
             cursor.execute("""
                 SELECT * FROM finances
-                WHERE description LIKE ? OR category LIKE ?
                 ORDER BY date DESC
-            """, (search_term, search_term))
+            """)
 
-        return [dict(row) for row in cursor.fetchall()]
+        query_lower = query.strip().lower()
+        results = []
+        for row in cursor.fetchall():
+            trans = self._decrypt_transaction(dict(row))
+            description = (trans.get("description") or "").lower()
+            category = (trans.get("category") or "").lower()
+            if query_lower in description or query_lower in category:
+                results.append(trans)
+
+        return results
 
     def get_monthly_summary(self, year: int = None, month: int = None) -> Dict:
         """Get summary for specific month"""
@@ -322,8 +312,6 @@ class FinanceManager:
         cache_key = f"monthly_{year}_{month}"
 
         def _calculate_monthly():
-            cursor = self.db.conn.cursor()
-
             # Get date range for the month
             month_start = f"{year}-{month:02d}-01"
             if month == 12:
@@ -331,37 +319,33 @@ class FinanceManager:
             else:
                 month_end = f"{year}-{month + 1:02d}-01"
 
-            cursor.execute("""
-                SELECT
-                    transaction_type,
-                    COUNT(*) as count,
-                    SUM(amount) as total
-                FROM finances
-                WHERE date >= ? AND date < ?
-                GROUP BY transaction_type
-            """, (month_start, month_end))
+            total_income = 0.0
+            total_expenses = 0.0
+            income_count = 0
+            expense_count = 0
+            daily_map = {}
 
-            stats_by_type = {row[0]: {'count': row[1], 'total': row[2]} for row in cursor.fetchall()}
+            for trans in self.db.get_all_transactions():
+                trans = self._decrypt_transaction(trans)
+                if not self._in_date_range(trans.get("date", ""), start=month_start, end=month_end):
+                    continue
 
-            income_stats = stats_by_type.get('income', {'count': 0, 'total': 0})
-            expense_stats = stats_by_type.get('expense', {'count': 0, 'total': 0})
+                date_only = (trans.get("date") or "")[:10]
+                daily_map.setdefault(date_only, {"date": date_only, "income": 0.0, "expense": 0.0})
 
-            total_income = income_stats['total'] or 0
-            total_expenses = expense_stats['total'] or 0
+                trans_type = (trans.get("transaction_type") or "").lower()
+                amount = float(trans.get("amount") or 0)
 
-            # Get daily breakdown
-            cursor.execute("""
-                SELECT
-                    DATE(date) as day,
-                    SUM(CASE WHEN transaction_type = 'income' THEN amount ELSE 0 END) as income,
-                    SUM(CASE WHEN transaction_type = 'expense' THEN amount ELSE 0 END) as expense
-                FROM finances
-                WHERE date >= ? AND date < ?
-                GROUP BY DATE(date)
-                ORDER BY day
-            """, (month_start, month_end))
+                if trans_type == "income":
+                    total_income += amount
+                    income_count += 1
+                    daily_map[date_only]["income"] += amount
+                elif trans_type == "expense":
+                    total_expenses += amount
+                    expense_count += 1
+                    daily_map[date_only]["expense"] += amount
 
-            daily_breakdown = [{'date': row[0], 'income': row[1] or 0, 'expense': row[2] or 0} for row in cursor.fetchall()]
+            daily_breakdown = [daily_map[key] for key in sorted(daily_map.keys())]
 
             return {
                 'year': year,
@@ -369,8 +353,8 @@ class FinanceManager:
                 'total_income': total_income,
                 'total_expenses': total_expenses,
                 'net': total_income - total_expenses,
-                'income_count': income_stats['count'],
-                'expense_count': expense_stats['count'],
+                'income_count': income_count,
+                'expense_count': expense_count,
                 'daily_breakdown': daily_breakdown,
                 'expenses_by_category': dict(self.get_expenses_by_category())
             }
@@ -383,21 +367,19 @@ class FinanceManager:
 
         def _check_budgets():
             thirty_days_ago = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
-            cursor = self.db.conn.cursor()
-
             budget_status = {}
 
             for category, budget_limit in category_budgets.items():
-                cursor.execute("""
-                    SELECT SUM(amount) as total
-                    FROM finances
-                    WHERE category = ?
-                    AND transaction_type = 'expense'
-                    AND date >= ?
-                """, (category, thirty_days_ago))
-
-                result = cursor.fetchone()
-                spent = result[0] or 0
+                spent = 0.0
+                for trans in self.db.get_all_transactions():
+                    trans = self._decrypt_transaction(trans)
+                    if not self._in_date_range(trans.get("date", ""), start=thirty_days_ago):
+                        continue
+                    if (trans.get("transaction_type") or "").lower() != "expense":
+                        continue
+                    if (trans.get("category") or "").lower() != category.lower():
+                        continue
+                    spent += float(trans.get("amount") or 0)
 
                 percentage = (spent / budget_limit * 100) if budget_limit > 0 else 0
 
@@ -454,24 +436,38 @@ class FinanceManager:
 
         def _calculate_trends():
             cutoff_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
-            cursor = self.db.conn.cursor()
 
-            # Weekly breakdown
-            cursor.execute("""
-                SELECT
-                    strftime('%Y-W%W', date) as week,
-                    SUM(CASE WHEN transaction_type = 'income' THEN amount ELSE 0 END) as income,
-                    SUM(CASE WHEN transaction_type = 'expense' THEN amount ELSE 0 END) as expense
-                FROM finances
-                WHERE date >= ?
-                GROUP BY week
-                ORDER BY week
-            """, (cutoff_date,))
+            weekly_map = {}
+            for trans in self.db.get_all_transactions():
+                trans = self._decrypt_transaction(trans)
+                if not self._in_date_range(trans.get("date", ""), start=cutoff_date):
+                    continue
 
-            weekly_data = [
-                {'week': row[0], 'income': row[1] or 0, 'expense': row[2] or 0}
-                for row in cursor.fetchall()
-            ]
+                date_str = trans.get("date") or ""
+                dt = None
+                try:
+                    dt = datetime.fromisoformat(date_str)
+                except ValueError:
+                    try:
+                        dt = datetime.strptime(date_str[:10], "%Y-%m-%d")
+                    except ValueError:
+                        dt = None
+
+                if not dt:
+                    continue
+
+                week_key = dt.strftime("%Y-W%W")
+                weekly_map.setdefault(week_key, {"week": week_key, "income": 0.0, "expense": 0.0})
+
+                trans_type = (trans.get("transaction_type") or "").lower()
+                amount = float(trans.get("amount") or 0)
+
+                if trans_type == "income":
+                    weekly_map[week_key]["income"] += amount
+                elif trans_type == "expense":
+                    weekly_map[week_key]["expense"] += amount
+
+            weekly_data = [weekly_map[key] for key in sorted(weekly_map.keys())]
 
             # Calculate trend (is spending increasing or decreasing)
             if len(weekly_data) > 1:
@@ -498,8 +494,12 @@ class FinanceManager:
         cache_key = "categories"
 
         def _fetch_categories():
-            cursor = self.db.conn.cursor()
-            cursor.execute("SELECT DISTINCT category FROM finances ORDER BY category")
-            return [row[0] for row in cursor.fetchall()]
+            categories = set()
+            for trans in self.db.get_all_transactions():
+                trans = self._decrypt_transaction(trans)
+                category = trans.get("category")
+                if category:
+                    categories.add(category)
+            return sorted(categories)
 
         return self._get_cached_data(cache_key, _fetch_categories)

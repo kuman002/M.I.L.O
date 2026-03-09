@@ -36,54 +36,34 @@ pip install -r requirements.txt
   pip install pyaudio
   ```
 
-### 2. Download Vosk Speech Recognition Model
-
-1. Visit: https://alphacephei.com/vosk/models
-2. Download a model (recommended: `vosk-model-small-en-us-0.15` for faster processing)
-3. Extract the downloaded ZIP file
-4. Create a folder named `models` in the project root (if it doesn't exist)
-5. Move the extracted model folder into `models/` and rename it to `model`
-
-**Final structure should be:**
-```
-project/
-  └── models/
-      └── model/
-          ├── am/
-          ├── graph/
-          ├── ivector/
-          └── ... (other model files)
-```
-
-**Model Options:**
-- `vosk-model-small-en-us-0.15` - Small, fast, ~40MB
-- `vosk-model-en-us-0.22` - Larger, more accurate, ~1.8GB
-- `vosk-model-en-us-0.22-lgraph` - Even larger, most accurate, ~1.9GB
-
-### 3. Run the Application
+### 2. Run the Application
 
 **Option 1: Using Python directly**
 ```bash
 python src/main.py
 ```
 
-**Option 2: Using the batch file (Windows)**
+**Option 2: Using the batch launcher (Windows)**
 ```bash
-run.bat
+launch_milo.bat
 ```
 
-**Option 3: Using the shell script (Linux/macOS)**
+**Option 3: Using scripts (all platforms)**
 ```bash
-chmod +x run.sh
-./run.sh
+# Windows PowerShell
+.\scripts\run.ps1
+
+# Windows Command Prompt
+.\scripts\run.bat
 ```
 
 ## First Run
 
 1. The application will create a `data/` directory automatically
 2. A SQLite database (`milo.db`) will be created for storing your data
-3. If voice recognition doesn't work, check that:
-   - Vosk model is correctly placed in `models/model/`
+3. **Voice recognition model** (faster-whisper) will download automatically on first use (~150MB)
+4. If voice recognition doesn't work, check that:
+   - Internet connection is available for initial model download
    - Microphone permissions are granted
    - Microphone is connected and working
 
@@ -93,15 +73,15 @@ To verify everything is working:
 
 1. **Test GUI**: Launch the application - you should see the MILO interface
 2. **Test Text Input**: Type "help" in the input field and press Enter
-3. **Test Voice**: Click "🎤 Start Listening" and say "hello" (requires Vosk model)
+3. **Test Voice**: Click "🎤 Start Listening" and say "hello" (model downloads automatically on first use)
 
 ## Common Issues
 
 ### Issue: "No module named 'PyQt5'"
 **Solution**: Install dependencies: `pip install -r requirements.txt`
 
-### Issue: "Vosk model not found"
-**Solution**: Download and place Vosk model in `models/model/` directory
+### Issue: "faster-whisper not installed"
+**Solution**: Install faster-whisper: `pip install faster-whisper`
 
 ### Issue: "PyAudio not found"
 **Solution**: Follow PyAudio installation instructions above
@@ -109,8 +89,8 @@ To verify everything is working:
 ### Issue: Voice recognition not working
 **Solution**: 
 - Verify microphone permissions
-- Check Vosk model installation
-- Try a different Vosk model
+- Ensure internet connection for initial model download
+- Check that `assets/milo_brain/` folder exists after first run
 
 ### Issue: Database errors
 **Solution**: 
@@ -120,10 +100,11 @@ To verify everything is working:
 ## System Requirements
 
 - **OS**: Windows 10+, Linux, or macOS
-- **RAM**: 2GB minimum (4GB recommended)
-- **Storage**: 500MB for application + model size
+- **RAM**: 4GB minimum (8GB recommended for voice features)
+- **Storage**: 500MB for application + voice model (~150MB)
 - **Python**: 3.10 or higher
 - **Microphone**: Required for voice features (optional for text-only use)
+- **Internet**: Required once for initial voice model download
 
 ## Support
 

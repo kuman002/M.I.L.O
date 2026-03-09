@@ -8,6 +8,8 @@ import os
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 
+from core.security import DataVault
+
 
 class Database:
     """Manages all database operations for MILO"""
@@ -31,9 +33,22 @@ class Database:
         # Enable foreign key constraints
         self.conn.execute("PRAGMA foreign_keys=ON")
         
+        self.vault = DataVault()
+
         self.create_tables()
         self.migrate_schema()
         self.create_indexes()
+        self._is_closed = False
+
+    @property
+    def is_open(self) -> bool:
+        """Check if database connection is open"""
+        return hasattr(self, 'conn') and self.conn is not None and not self._is_closed
+        
+    def _check_conn(self):
+        """Raise error if connection is closed"""
+        if not self.is_open:
+            raise sqlite3.ProgrammingError("Cannot operate on a closed database.")
     
     def migrate_schema(self):
         """Perform schema migrations for existing databases"""
@@ -59,6 +74,56 @@ class Database:
                 cursor.execute("ALTER TABLE habits ADD COLUMN reminder_time TEXT DEFAULT '20:00'")
             except sqlite3.OperationalError as e:
                 print(f"Migration warning: {e}")
+
+        self._encrypt_existing_finances()
+
+        self.conn.commit()
+
+    def _is_encrypted(self, value) -> bool:
+        if not isinstance(value, str):
+            return False
+        return value.startswith("gAAAA")
+
+    def _encrypt_existing_finances(self) -> None:
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("SELECT id, transaction_type, category, amount, description FROM finances")
+        except sqlite3.OperationalError:
+            return
+
+        rows = cursor.fetchall()
+        for row in rows:
+            trans_id = row[0]
+            transaction_type = row[1]
+            category = row[2]
+            amount = row[3]
+            description = row[4]
+
+            enc_transaction_type = transaction_type
+            if transaction_type and not self._is_encrypted(str(transaction_type)):
+                enc_transaction_type = self.vault.encrypt(str(transaction_type))
+
+            enc_category = category
+            if category and not self._is_encrypted(str(category)):
+                enc_category = self.vault.encrypt(str(category))
+
+            enc_amount = amount
+            amount_text = "" if amount is None else str(amount)
+            if amount_text and not self._is_encrypted(amount_text):
+                enc_amount = self.vault.encrypt(amount_text)
+
+            enc_description = description
+            if description and not self._is_encrypted(str(description)):
+                enc_description = self.vault.encrypt(str(description))
+
+            cursor.execute(
+                """
+                UPDATE finances
+                SET transaction_type = ?, category = ?, amount = ?, description = ?
+                WHERE id = ?
+                """,
+                (enc_transaction_type, enc_category, enc_amount, enc_description, trans_id)
+            )
 
         self.conn.commit()
     
@@ -203,6 +268,7 @@ class Database:
     def add_task(self, title: str, description: str = "", due_date: str = None, 
                  priority: str = "medium", category: str = "general") -> int:
         """Add a new task"""
+        self._check_conn()
         cursor = self.conn.cursor()
         cursor.execute("""
             INSERT INTO tasks (title, description, due_date, priority, category)
@@ -213,6 +279,7 @@ class Database:
     
     def get_tasks(self, status: str = None) -> List[Dict]:
         """Get all tasks, optionally filtered by status"""
+        self._check_conn()
         cursor = self.conn.cursor()
         if status:
             cursor.execute("SELECT * FROM tasks WHERE status = ? ORDER BY due_date, priority", (status,))
@@ -252,13 +319,26 @@ class Database:
     def add_transaction(self, transaction_type: str, category: str, 
                        amount: float, description: str = "") -> int:
         """Add a financial transaction"""
+        enc_transaction_type = self.vault.encrypt(str(transaction_type)) if transaction_type else ""
+        enc_category = self.vault.encrypt(str(category)) if category else ""
+        enc_amount = self.vault.encrypt(str(amount)) if amount is not None else ""
+        enc_description = self.vault.encrypt(description) if description else ""
         cursor = self.conn.cursor()
         cursor.execute("""
             INSERT INTO finances (transaction_type, category, amount, description)
             VALUES (?, ?, ?, ?)
-        """, (transaction_type, category, amount, description))
+        """, (enc_transaction_type, enc_category, enc_amount, enc_description))
         self.conn.commit()
         return cursor.lastrowid
+
+    def decrypt_text(self, cipher_text: str) -> str:
+        """Decrypt encrypted text when possible"""
+        if not cipher_text:
+            return cipher_text
+        try:
+            return self.vault.decrypt(cipher_text)
+        except Exception:
+            return cipher_text
     
     def get_transactions(self, limit: int = 50) -> List[Dict]:
         """Get recent transactions"""
@@ -268,33 +348,64 @@ class Database:
             ORDER BY date DESC 
             LIMIT ?
         """, (limit,))
-        return [dict(row) for row in cursor.fetchall()]
+        return [self._decrypt_finance_row(dict(row)) for row in cursor.fetchall()]
+
+    def get_all_transactions(self) -> List[Dict]:
+        """Get all transactions (decrypted)"""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM finances ORDER BY date DESC")
+        return [self._decrypt_finance_row(dict(row)) for row in cursor.fetchall()]
     
     def get_balance(self) -> float:
         """Get current balance (income - expenses)"""
-        cursor = self.conn.cursor()
-        cursor.execute("""
-            SELECT 
-                SUM(CASE WHEN transaction_type = 'income' THEN amount ELSE 0 END) as income,
-                SUM(CASE WHEN transaction_type = 'expense' THEN amount ELSE 0 END) as expenses
-            FROM finances
-        """)
-        result = cursor.fetchone()
-        income = result[0] or 0
-        expenses = result[1] or 0
+        income = 0.0
+        expenses = 0.0
+        for trans in self.get_all_transactions():
+            trans_type = (trans.get("transaction_type") or "").lower()
+            amount = float(trans.get("amount") or 0)
+            if trans_type == "income":
+                income += amount
+            elif trans_type == "expense":
+                expenses += amount
         return income - expenses
     
     def get_expenses_by_category(self) -> List[Tuple[str, float]]:
         """Get total expenses grouped by category"""
-        cursor = self.conn.cursor()
-        cursor.execute("""
-            SELECT category, SUM(amount) as total
-            FROM finances
-            WHERE transaction_type = 'expense'
-            GROUP BY category
-            ORDER BY total DESC
-        """)
-        return cursor.fetchall()
+        totals = {}
+        for trans in self.get_all_transactions():
+            if (trans.get("transaction_type") or "").lower() != "expense":
+                continue
+            category = trans.get("category") or "Other"
+            totals[category] = totals.get(category, 0.0) + float(trans.get("amount") or 0)
+
+        return sorted(totals.items(), key=lambda x: x[1], reverse=True)
+
+    def _decrypt_finance_row(self, trans: Dict) -> Dict:
+        if not trans:
+            return trans
+
+        trans["transaction_type"] = self.decrypt_text(trans.get("transaction_type"))
+        trans["category"] = self.decrypt_text(trans.get("category"))
+        trans["description"] = self.decrypt_text(trans.get("description"))
+        trans["amount"] = self._decrypt_amount(trans.get("amount"))
+        return trans
+
+    def _decrypt_amount(self, value) -> float:
+        if value is None:
+            return 0.0
+        if isinstance(value, (int, float)):
+            return float(value)
+
+        text = str(value)
+        try:
+            text = self.vault.decrypt(text)
+        except Exception:
+            pass
+
+        try:
+            return float(text)
+        except (ValueError, TypeError):
+            return 0.0
     
     # Habit operations
     def add_habit(self, name: str, description: str = "", target_frequency: str = "daily", reminder_time: str = "20:00") -> int:
@@ -309,6 +420,7 @@ class Database:
     
     def get_habits(self) -> List[Dict]:
         """Get all habits"""
+        self._check_conn()
         cursor = self.conn.cursor()
         cursor.execute("SELECT * FROM habits ORDER BY created_at DESC")
         return [dict(row) for row in cursor.fetchall()]
@@ -361,4 +473,9 @@ class Database:
     
     def close(self):
         """Close database connection"""
-        self.conn.close()
+        if hasattr(self, 'conn') and self.conn:
+            try:
+                self.conn.close()
+            except Exception:
+                pass
+        self._is_closed = True
