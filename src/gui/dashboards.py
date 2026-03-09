@@ -8,6 +8,11 @@ from PyQt5.QtGui import QFont
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
+import warnings
+
+# Suppress specific matplotlib layout warnings
+warnings.filterwarnings('ignore', message='.*constrained_layout not applied.*')
+warnings.filterwarnings('ignore', message='.*Tight layout not applied.*')
 
 
 class ChartCanvas(FigureCanvas):
@@ -29,10 +34,23 @@ class ChartCanvas(FigureCanvas):
         self.ax.xaxis.label.set_color('#cbd5e1')
         self.ax.yaxis.label.set_color('#cbd5e1')
         
-        self.fig.tight_layout()
-        
         super().__init__(self.fig)
         self.setStyleSheet("background-color: #0f172a; border: 1px solid #334155; border-radius: 8px;")
+    
+    def safe_draw(self):
+        """Safely draw the canvas with proper layout handling"""
+        try:
+            # Apply tight layout with padding, suppress warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                self.fig.tight_layout(pad=1.5)
+        except Exception:
+            # If tight_layout fails, just skip it
+            pass
+        finally:
+            # Always draw the canvas
+            self.draw()
+
 
 
 class TaskDashboardChart(ChartCanvas):
@@ -81,7 +99,6 @@ class TaskDashboardChart(ChartCanvas):
                         color='#64748b', fontsize=12, transform=self.ax.transAxes)
             self.ax.set_title('Task Status Distribution', color='#cbd5e1', fontsize=11, fontweight='bold')
         
-        self.fig.tight_layout()
         self.draw()
 
 
@@ -122,7 +139,6 @@ class FinanceDashboardChart(ChartCanvas):
                         color='#64748b', fontsize=12, transform=self.ax.transAxes)
             self.ax.set_title('Income vs Expenses', color='#cbd5e1', fontsize=11, fontweight='bold')
         
-        self.fig.tight_layout()
         self.draw()
 
 
@@ -169,7 +185,6 @@ class ExpenseByCategoryChart(ChartCanvas):
                         color='#64748b', fontsize=12, transform=self.ax.transAxes)
             self.ax.set_title('Expenses by Category', color='#cbd5e1', fontsize=11, fontweight='bold')
         
-        self.fig.tight_layout()
         self.draw()
 
 
@@ -214,7 +229,6 @@ class PriorityTasksChart(ChartCanvas):
                         color='#64748b', fontsize=12, transform=self.ax.transAxes)
             self.ax.set_title('Tasks by Priority', color='#cbd5e1', fontsize=11, fontweight='bold')
         
-        self.fig.tight_layout()
         self.draw()
 
 
@@ -268,7 +282,6 @@ class BudgetStatusChart(ChartCanvas):
                         color='#64748b', fontsize=12, transform=self.ax.transAxes)
             self.ax.set_title('Budget Status', color='#cbd5e1', fontsize=11, fontweight='bold')
         
-        self.fig.tight_layout()
         self.draw()
 
 

@@ -4,7 +4,7 @@ Handles habit tracking and analytics
 """
 
 from typing import List, Dict
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 from database.database import Database
 
@@ -116,7 +116,56 @@ class HabitManager:
     
     def get_habits(self) -> List[Dict]:
         """Get all habits"""
-        return self._get_cached_data("habits", self.db.get_habits)
+        def _query_habits_with_streaks():
+            habits = self.db.get_habits()
+            habit_ids = [habit.get('id') for habit in habits if habit.get('id') is not None]
+            streaks = self._calculate_streaks(habit_ids)
+
+            for habit in habits:
+                habit_id = habit.get('id')
+                habit['streak'] = streaks.get(habit_id, 0)
+
+            return habits
+
+        return self._get_cached_data("habits", _query_habits_with_streaks)
+
+    def _calculate_streaks(self, habit_ids: List[int]) -> Dict[int, int]:
+        """Calculate consecutive-day streak for each habit id"""
+        if not habit_ids:
+            return {}
+
+        placeholders = ",".join(["?"] * len(habit_ids))
+        query = f"SELECT habit_id, date FROM habit_logs WHERE habit_id IN ({placeholders}) ORDER BY date DESC"
+
+        cursor = self.db.conn.cursor()
+        cursor.execute(query, habit_ids)
+        rows = cursor.fetchall()
+
+        logged_dates: Dict[int, set] = {hid: set() for hid in habit_ids}
+        for row in rows:
+            habit_id = row[0]
+            date_value = str(row[1]) if row[1] is not None else ""
+            if not date_value:
+                continue
+            date_only = date_value.split(" ")[0]
+            logged_dates.setdefault(habit_id, set()).add(date_only)
+
+        streaks: Dict[int, int] = {}
+        for habit_id in habit_ids:
+            streak = 0
+            check_day = datetime.now().date()
+
+            while True:
+                day_str = check_day.strftime('%Y-%m-%d')
+                if day_str in logged_dates.get(habit_id, set()):
+                    streak += 1
+                    check_day = check_day - timedelta(days=1)
+                else:
+                    break
+
+            streaks[habit_id] = streak
+
+        return streaks
     
     def log_habit(self, habit_id: int, notes: str = "") -> Dict:
         """Compatibility wrapper for logging a habit completion"""
