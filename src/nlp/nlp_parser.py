@@ -4,7 +4,22 @@ from difflib import SequenceMatcher
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional, List, Tuple
 import dateparser
-from word2number import w2n
+
+try:
+    from word2number import w2n
+    WORD2NUMBER_AVAILABLE = True
+except Exception:
+    w2n = None
+    WORD2NUMBER_AVAILABLE = False
+
+try:
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.linear_model import LogisticRegression
+    SKLEARN_AVAILABLE = True
+except Exception:
+    TfidfVectorizer = None
+    LogisticRegression = None
+    SKLEARN_AVAILABLE = False
 
 class NLPParser:
     """
@@ -42,6 +57,66 @@ class NLPParser:
             "microsoft edge": "edge"
         }
         self._init_llm()
+        self._init_intent_classifier()
+
+    def _init_intent_classifier(self):
+        """Initialize a lightweight local intent classifier as a defensive fallback."""
+        self._intent_vectorizer = None
+        self._intent_clf = None
+        if not SKLEARN_AVAILABLE:
+            return
+
+        samples: List[Tuple[str, str]] = [
+            ("add task to finish report tomorrow", "create_task"),
+            ("create a task for interview", "create_task"),
+            ("put this on my list", "create_task"),
+            ("show my tasks", "list_tasks"),
+            ("list pending tasks", "list_tasks"),
+            ("add expense 500 for food", "add_expense"),
+            ("for food add a 50", "add_expense"),
+            ("log kharcha 120", "add_expense"),
+            ("add income 2500", "add_income"),
+            ("check my balance", "check_balance"),
+            ("what is my balance", "check_balance"),
+            ("remind me in 10 minutes", "add_reminder"),
+            ("set reminder at 5 pm", "add_reminder"),
+            ("open brave browser", "open_app"),
+            ("launch notepad", "open_app"),
+            ("hello milo", "greeting"),
+            ("help me", "help"),
+            ("what time is it", "time_query"),
+        ]
+
+        try:
+            texts = [s[0] for s in samples]
+            labels = [s[1] for s in samples]
+            self._intent_vectorizer = TfidfVectorizer(ngram_range=(1, 2), min_df=1)
+            X = self._intent_vectorizer.fit_transform(texts)
+            self._intent_clf = LogisticRegression(max_iter=500, class_weight="balanced")
+            self._intent_clf.fit(X, labels)
+        except Exception:
+            self._intent_vectorizer = None
+            self._intent_clf = None
+
+    def _predict_intent_local(self, text_lower: str) -> Tuple[Optional[str], float]:
+        if not self._intent_vectorizer or not self._intent_clf:
+            return None, 0.0
+        try:
+            X = self._intent_vectorizer.transform([text_lower])
+            probs = self._intent_clf.predict_proba(X)[0]
+            idx = int(probs.argmax())
+            return self._intent_clf.classes_[idx], float(probs[idx])
+        except Exception:
+            return None, 0.0
+
+    def _has_ambiguous_time_reference(self, text_lower: str) -> bool:
+        """Detect phrases where hour is present but AM/PM is missing (e.g., 'tomorrow 4', 'at 5')."""
+        if re.search(r"\b\d{1,2}(?::\d{2})?\s*(am|pm)\b", text_lower):
+            return False
+        return bool(
+            re.search(r"\b(?:today|tomorrow|tonight)\s+\d{1,2}(?::\d{2})?\b", text_lower)
+            or re.search(r"\bat\s+\d{1,2}(?::\d{2})?\b", text_lower)
+        )
 
     def _init_llm(self):
         try:
@@ -114,6 +189,11 @@ class NLPParser:
                 parsed_data["intent"] = "unknown"
             if "entities" not in parsed_data:
                 parsed_data["entities"] = {}
+
+            # Defensive post-processing for ambiguous time references in tasks.
+            if parsed_data.get("intent") == "create_task" and self._has_ambiguous_time_reference(text.lower()):
+                parsed_data["entities"].setdefault("missing_entity", "meridiem")
+                parsed_data["entities"].setdefault("clarification_prompt", "Did you mean AM or PM for that time?")
 
             parsed_data["original_text"] = text
             parsed_data["confidence"] = 0.99
@@ -246,6 +326,9 @@ class NLPParser:
         if any(phrase in text_lower for phrase in ["previous slide", "prev slide", "go back slide", "paya slide"]):
             return {"intent": "prev_slide", "entities": {}, "original_text": raw_text, "confidence": 0.98}
 
+        # 3.5 Local classifier hint (defensive fallback when LLM is unavailable)
+        predicted_intent, predicted_conf = self._predict_intent_local(text_lower)
+
         # 4. Intent Detection: Expenses (Triggered by currency or spent keywords)
         expense_keywords = ["spent", "paid", "cost", "dropped", "bought", "selavu", "expense", "recorded", "kharcha", "spend", "spent"]
         currency_keywords = ["rupees", "rs", "bucks", "dollars", "$", "inr"]
@@ -270,7 +353,7 @@ class NLPParser:
             or ((has_add_like or "for" in text_lower) and has_category_hint and not looks_like_task_or_reminder)
         )
 
-        if is_likely_expense:
+        if is_likely_expense or (predicted_intent == "add_expense" and predicted_conf >= 0.72 and amount_match):
             if amount_match:
                 entities["amount"] = float(amount_match.group(1))
                 # Extract category
@@ -308,6 +391,9 @@ class NLPParser:
             extracted_dt = self._extract_date_with_parser(text_with_digits)
             if extracted_dt:
                 entities["date"] = extracted_dt.strftime('%Y-%m-%d %H:%M:%S')
+                if self._has_ambiguous_time_reference(text_lower):
+                    entities["missing_entity"] = "meridiem"
+                    entities["clarification_prompt"] = "Did you mean AM or PM for that time?"
             
             # Clean title extraction
             entities["title"] = self._surgical_title_extraction(text_lower, is_task=is_task)
@@ -325,6 +411,10 @@ class NLPParser:
                 else:
                     entities["priority"] = "medium"
                 return {"intent": "create_task", "entities": entities, "original_text": raw_text, "confidence": 0.85}
+
+        # Classifier-based simple routes for intents that do not require heavy entity extraction.
+        if predicted_conf >= 0.78 and predicted_intent in {"check_balance", "list_tasks", "time_query", "greeting", "help"}:
+            return {"intent": predicted_intent, "entities": {}, "original_text": raw_text, "confidence": predicted_conf}
 
         # 6. Intent Detection: Apps / Search (More Robust)
         # Context-aware computer-use intents
@@ -376,6 +466,25 @@ class NLPParser:
 
     def _convert_words_to_numbers(self, text: str) -> str:
         """Convert 'five' to '5', etc. using word2number"""
+        fallback_numbers = {
+            "zero": 0,
+            "one": 1,
+            "two": 2,
+            "three": 3,
+            "four": 4,
+            "five": 5,
+            "six": 6,
+            "seven": 7,
+            "eight": 8,
+            "nine": 9,
+            "ten": 10,
+        }
+
+        def _word_to_number(token: str):
+            if WORD2NUMBER_AVAILABLE and w2n is not None:
+                return w2n.word_to_num(token)
+            return fallback_numbers.get(token)
+
         words = text.split()
         new_words = []
         i = 0
@@ -386,7 +495,8 @@ class NLPParser:
                 # We only want to convert if it's clearly a number
                 potential_num = words[i]
                 if potential_num in ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"]:
-                    new_words.append(str(w2n.word_to_num(potential_num)))
+                    converted = _word_to_number(potential_num)
+                    new_words.append(str(converted) if converted is not None else potential_num)
                 else:
                     new_words.append(potential_num)
             except:

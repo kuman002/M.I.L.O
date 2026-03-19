@@ -155,6 +155,12 @@ class HabitManager:
             streak = 0
             check_day = datetime.now().date()
 
+            # If today hasn't been logged yet, preserve any existing streak
+            # by starting the consecutive-day check from yesterday
+            today_str = check_day.strftime('%Y-%m-%d')
+            if today_str not in logged_dates.get(habit_id, set()):
+                check_day = check_day - timedelta(days=1)
+
             while True:
                 day_str = check_day.strftime('%Y-%m-%d')
                 if day_str in logged_dates.get(habit_id, set()):
@@ -220,24 +226,26 @@ class HabitManager:
         """Analyze user activity patterns for optimized AI insights"""
         now = datetime.now()
         hour = now.hour
-        
+
         # 1. Fetch relevant data
         pending_tasks = self.db.get_tasks(status='pending')
         high_priority = [t for t in pending_tasks if t.get('priority') == 'high']
         balance = self.db.get_balance()
-        habit_stats = self.get_all_habit_stats()
-        habits = self.get_habits()
-        
+        habits = self.get_habits()  # already carries streak from _calculate_streaks
+        habit_ids = [h.get('id') for h in habits if h.get('id') is not None]
+        logged_today_ids = self.get_logged_today_ids(habit_ids)
+        today = now.strftime('%Y-%m-%d')
+
         suggestions = []
-        
+
         # 2. Time-aware suggestions
         if 5 <= hour < 10:
             suggestions.append("Morning focus: pick your top task and finish it first for quick momentum.")
         elif 12 <= hour < 15:
             suggestions.append("Midday check-in: review your tasks and log a habit to stay on track.")
         elif 21 <= hour or hour < 5:
-            suggestions.append("Evening wrap-up: log today’s habits and set one task for tomorrow.")
-            
+            suggestions.append("Evening wrap-up: log today\u2019s habits and set one task for tomorrow.")
+
         # 3. Task-based insights
         if len(high_priority) > 3:
             suggestions.append(f"You have {len(high_priority)} high-priority tasks. Tackle the smallest one to build momentum.")
@@ -251,65 +259,49 @@ class HabitManager:
             suggestions.append("Your balance is negative. Review recent expenses and pause non-essentials this week.")
         elif balance < 100:
             suggestions.append("Your balance is low. Set a small daily spend limit to stabilize cash flow.")
-            
-        # 5. Habit-based insights
-        low_habit = next((h for h in habit_stats if h.get('completion_rate', 100) < 50), None)
-        if low_habit:
-            suggestions.append(f"Your habit '{low_habit['name']}' needs focus. Shrink it to a 2-minute version today.")
-        elif habit_stats and all(h.get('completion_rate', 0) > 80 for h in habit_stats):
-            suggestions.append("Great consistency! Consider stacking a new habit onto an existing routine.")
 
-        # Streak-based insights (estimate using recent logs)
-        try:
-            today = datetime.now().strftime('%Y-%m-%d')
-            if habits:
-                habit_ids = [h.get('id') for h in habits if h.get('id') is not None]
-                placeholders = ",".join(["?"] * len(habit_ids))
-                query = f"SELECT habit_id, date FROM habit_logs WHERE habit_id IN ({placeholders}) ORDER BY date DESC"
-                cursor = self.db.conn.cursor()
-                cursor.execute(query, habit_ids)
-                logs = cursor.fetchall()
+        # 5. Habit streak insights (uses real streak values from get_habits)
+        if habits:
+            # Best streak
+            best = max(habits, key=lambda h: h.get('streak', 0))
+            best_streak = best.get('streak', 0)
+            if best_streak >= 7:
+                suggestions.append(
+                    f"\U0001f525 '{best['name']}' is on fire \u2014 {best_streak}-day streak! Keep the momentum going."
+                )
+            elif best_streak >= 3:
+                suggestions.append(
+                    f"Good run: '{best['name']}' has a {best_streak}-day streak. One more day to grow it further."
+                )
 
-                # Build recent streak counts (simple: consecutive days from today)
-                streaks = {hid: 0 for hid in habit_ids}
-                seen_dates = {hid: set() for hid in habit_ids}
-                for row in logs:
-                    hid = row[0]
-                    log_date = row[1]
-                    seen_dates[hid].add(log_date)
+            # Habits not logged today
+            unlogged = [h for h in habits if h.get('id') not in logged_today_ids]
+            if unlogged:
+                names = ", ".join(f"'{h['name']}'" for h in unlogged[:3])
+                suggestions.append(f"Still to log today: {names}. Mark them done to keep your streak alive.")
+            else:
+                suggestions.append("All habits logged today! \u2705 Great discipline \u2014 you\u2019re building a strong routine.")
 
-                for hid in habit_ids:
-                    streak = 0
-                    check_day = datetime.now()
-                    while True:
-                        day_str = check_day.strftime('%Y-%m-%d')
-                        if day_str in seen_dates[hid]:
-                            streak += 1
-                            check_day = check_day.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
-                        else:
-                            break
-                    streaks[hid] = streak
+            # Chronically low streak
+            broken = [h for h in habits if h.get('streak', 0) == 0]
+            if broken:
+                b = broken[0]
+                suggestions.append(
+                    f"Habit '{b['name']}' needs focus. Shrink it to a 2-minute version today to restart the streak."
+                )
 
-                # Pick best streak
-                best_habit_id = max(streaks, key=streaks.get) if streaks else None
-                best_streak = streaks.get(best_habit_id, 0) if best_habit_id else 0
-                if best_streak >= 3 and best_habit_id is not None:
-                    best_habit = next((h for h in habits if h.get('id') == best_habit_id), None)
-                    if best_habit:
-                        suggestions.append(
-                            f"Streak win: '{best_habit['name']}' is {best_streak} days strong. Keep it going tomorrow."
-                        )
-                elif best_streak == 0 and habits:
-                    suggestions.append("No streaks yet. Start with a single habit today to begin a streak.")
-        except Exception:
-            pass
+            # Habit completion rates
+            habit_stats = self.get_all_habit_stats()
+            all_good = habit_stats and all(h.get('completion_rate', 0) > 80 for h in habit_stats)
+            if all_good:
+                suggestions.append("Great consistency! Consider stacking a new habit onto an existing routine.")
 
-        # 6. Activity Count fallback
+        # 6. Activity count fallback
         task_activities = self.db.get_activity_patterns('task_created', days=7)
         if len(task_activities) > 15:
             suggestions.append("You created many tasks this week. Schedule a 15-minute cleanup to prioritize.")
 
-        # Category-specific finance tips (based on top expense category)
+        # 7. Category-specific finance tips
         try:
             cursor = self.db.conn.cursor()
             cursor.execute("""
@@ -326,26 +318,28 @@ class HabitManager:
                 top_cat = top_row[0]
                 top_total = top_row[1] or 0
                 if top_total > 0:
-                    if str(top_cat).lower() in ['food', 'groceries']:
+                    cat_lower = str(top_cat).lower()
+                    if cat_lower in ['food', 'groceries']:
                         suggestions.append("Top spend is Food. Try meal planning 2 days this week to cut costs.")
-                    elif str(top_cat).lower() in ['transport', 'fuel']:
+                    elif cat_lower in ['transport', 'fuel']:
                         suggestions.append("Transport is your top expense. Batch errands to reduce trips.")
-                    elif str(top_cat).lower() in ['entertainment']:
+                    elif cat_lower in ['entertainment']:
                         suggestions.append("Entertainment is highest. Set a weekly fun budget to stay on track.")
-                    elif str(top_cat).lower() in ['utilities']:
+                    elif cat_lower in ['utilities']:
                         suggestions.append("Utilities lead expenses. Check for small savings like AC timers or LED bulbs.")
                     else:
                         suggestions.append(f"Your top expense is {top_cat}. Set a simple monthly cap for it.")
         except Exception:
             pass
 
-        # Final cleanup: ensure we always have at least 2 suggestions
+        # Final fallback
         if len(suggestions) < 2:
             suggestions.append("Consistency is key. Log at least one habit today for better insights.")
             suggestions.append("Check your dashboard once a day to keep priorities clear.")
-            
+
         return {
-            'suggestions': suggestions[:5], # Return top 5 most relevant
+            'suggestions': suggestions[:5],
             'task_activity_count': len(task_activities),
             'high_priority_count': len(high_priority)
         }
+

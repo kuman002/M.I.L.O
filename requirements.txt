@@ -25,4 +25,5 @@ scikit-learn>=1.2.0
 pyautogui
 pygetwindow
 easyocr
+pytest-qt
 

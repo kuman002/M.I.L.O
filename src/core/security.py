@@ -4,6 +4,7 @@ import hmac
 import os
 import time
 from array import array
+from abc import ABC, abstractmethod
 
 
 def _load_env_file(base_dir: str) -> None:
@@ -146,21 +147,48 @@ def capture_intruder(output_dir: str = None) -> str:
     return filepath
 
 
-class VoiceBiometrics:
+class BaseSpeakerVerifier(ABC):
+    """Abstract interface for speaker verification providers."""
+
+    def __init__(self, threshold: float = 0.7):
+        self.threshold = threshold
+        self.sample_rate = None
+        self.frame_length = None
+
+    @abstractmethod
+    def is_available(self) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_unavailable_reason(self) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
+    def has_profile(self) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def verify_audio_bytes(self, pcm_bytes: bytes):
+        raise NotImplementedError
+
+    @abstractmethod
+    def enroll_audio_bytes(self, pcm_bytes: bytes, include_feedback: bool = False):
+        raise NotImplementedError
+
+
+class EagleSpeakerVerifier(BaseSpeakerVerifier):
     def __init__(self, profile_path: str = None, access_key: str = None, threshold: float = 0.7):
+        super().__init__(threshold=threshold)
         base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
         _load_env_file(base_dir)
         if profile_path is None:
             profile_path = os.path.join(base_dir, "assets", ".eagle_profile")
         self.profile_path = profile_path
-        self.threshold = threshold
         self._init_error = ""
         self._access_key = access_key or self._resolve_access_key()
         self._pveagle = None
         self._eagle = None
         self._profiler = None
-        self.sample_rate = None
-        self.frame_length = None
 
         if not self._access_key:
             self._init_error = "Missing Picovoice access key in .env (PICOVOICE_ACCESS_KEY)."
@@ -346,3 +374,8 @@ class VoiceBiometrics:
         for offset in range(0, total, frame_length):
             frame = samples[offset:offset + frame_length]
             yield frame
+
+
+class VoiceBiometrics(EagleSpeakerVerifier):
+    """Backward-compatible alias for the previous biometrics class name."""
+    pass

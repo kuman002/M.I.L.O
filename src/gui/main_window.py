@@ -6,6 +6,7 @@ import sys
 import os
 import warnings
 import datetime
+import threading
 
 # Suppress matplotlib layout and math warnings
 warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib')
@@ -29,6 +30,8 @@ class VoiceCommandEmitter(QObject):
     voice_command_detected = pyqtSignal(str)
     status_update = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
+    assistant_result = pyqtSignal(str, object, str)
+    assistant_error = pyqtSignal(str, str, str)
 
 
 from database.database import Database
@@ -86,13 +89,17 @@ class MainWindow(QMainWindow):
         self.voice_emitter.voice_command_detected.connect(self.handle_voice_command)
         self.voice_emitter.status_update.connect(self.update_status)
         self.voice_emitter.error_occurred.connect(self.handle_voice_error)
+        self.voice_emitter.assistant_result.connect(self._handle_async_assistant_result)
+        self.voice_emitter.assistant_error.connect(self._handle_async_assistant_error)
         
         # Initialize optimized voice recognition
         print("[GUI] Initializing Voice Recognition...")
         self.voice_recognizer = VoiceRecognizer(model_size="base")
         self.is_listening = False
+        self._pending_clarification = None
         
         # Apply styling
+        self._dark_theme = True
         self.setStyleSheet(self.get_styles())
         
         # Build UI
@@ -486,8 +493,385 @@ QScrollBar::handle:vertical {
 QScrollBar::handle:vertical:hover {
     background-color: #4B5563;
 }
+
+/* ================= HEADER / FOOTER (dark) ================= */
+QFrame#mainHeader {
+    background-color: #0B132B;
+    border-bottom: 1px solid #1F2937;
+}
+
+QFrame#mainFooter {
+    background-color: #111827;
+    border-top: 1px solid #1F2937;
+}
+
+QFrame#footerInputWrap {
+    background-color: #0B1120;
+    border: 1px solid #334155;
+    border-radius: 8px;
+}
+
+/* ================= THEME TOGGLE BUTTON ================= */
+QPushButton#themeToggleBtn {
+    background-color: #1E293B;
+    border: 1px solid #334155;
+    border-radius: 14px;
+    color: #F1F5F9;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 4px 14px;
+    min-width: 80px;
+}
+
+QPushButton#themeToggleBtn:hover {
+    background-color: #334155;
+    border-color: #64748B;
+}
         """
     
+    def get_light_styles(self):
+        """Light Theme for MILO"""
+        return """
+/* ================= MAIN ================= */
+QMainWindow, QWidget {
+    background-color: #F1F5F9;
+    color: #1E293B;
+    font-family: Segoe UI, Inter, Arial;
+}
+
+QLabel {
+    background-color: transparent;
+    color: #1E293B;
+}
+
+QTabWidget::pane {
+    border: none;
+    top: 0px;
+}
+
+/* ================= TABS ================= */
+QTabBar::tab {
+    background-color: transparent;
+    color: #64748B;
+    padding: 10px 18px;
+    margin-right: 2px;
+    border: none;
+    border-bottom: 2px solid transparent;
+    font-size: 14px;
+    font-weight: 500;
+}
+
+QTabBar::tab:selected {
+    background-color: transparent;
+    color: #2563EB;
+    border-bottom: 2px solid #2563EB;
+    font-weight: 600;
+}
+
+QTabBar::tab:hover {
+    color: #1E293B;
+}
+
+QPushButton#headerLink {
+    background-color: transparent;
+    border: none;
+    color: #475569;
+    font-size: 15px;
+    font-weight: 500;
+    padding: 6px 4px;
+}
+
+QPushButton#headerLink:hover {
+    color: #1E293B;
+}
+
+QLabel#headerBrand {
+    color: #1E293B;
+    font-size: 36px;
+    font-weight: 700;
+}
+
+QLabel#headerSub {
+    color: #64748B;
+    font-size: 15px;
+}
+
+QLabel#statusReady {
+    background-color: transparent;
+    color: #16A34A;
+    border: none; padding: 0;
+    font-size: 15px; font-weight: 600;
+}
+
+QLabel#statusListening {
+    background-color: transparent;
+    color: #2563EB;
+    border: none; padding: 0;
+    font-size: 15px; font-weight: 600;
+}
+
+QLabel#statusError {
+    background-color: transparent;
+    color: #DC2626;
+    border: none; padding: 0;
+    font-size: 15px; font-weight: 600;
+}
+
+/* ================= CARDS ================= */
+QFrame#card, QFrame#panelCard {
+    background-color: #FFFFFF;
+    border: 1px solid #E2E8F0;
+    border-radius: 8px;
+}
+
+QFrame#panelHeader {
+    background-color: transparent;
+    border: none;
+    border-bottom: 1px solid #E2E8F0;
+}
+
+/* ================= TITLES ================= */
+QLabel#sectionTitle {
+    font-size: 16px; font-weight: 600;
+    color: #1E293B;
+    background-color: transparent;
+}
+
+QLabel#cardTitle {
+    font-size: 18px; font-weight: 500;
+    color: #64748B;
+    background-color: transparent;
+}
+
+QLabel#value {
+    font-size: 28px; font-weight: 700;
+    color: #1E293B;
+}
+
+QLabel#tasksValue  { color: #2563EB;  font-size: 56px; font-weight: 700; }
+QLabel#balanceValue{ color: #16A34A;  font-size: 56px; font-weight: 700; }
+QLabel#habitsValue { color: #D97706;  font-size: 56px; font-weight: 700; }
+
+QLabel#panelBody {
+    color: #334155;
+    font-size: 18px;
+    padding: 24px;
+    background-color: transparent;
+    border: none;
+}
+
+QLabel#panelBodyTerminal {
+    color: #334155;
+    font-size: 18px;
+    padding: 24px;
+    background-color: #F8FAFC;
+    border: none;
+    font-family: Consolas, "Courier New", monospace;
+}
+
+/* ================= PANELS ================= */
+QTextEdit, QPlainTextEdit {
+    background-color: #FFFFFF;
+    border: 1px solid #E2E8F0;
+    border-radius: 10px;
+    padding: 8px;
+    color: #1E293B;
+    font-size: 13px;
+}
+
+QLineEdit, QComboBox, QDateEdit, QTimeEdit {
+    background-color: #FFFFFF;
+    border: 1px solid #CBD5E1;
+    border-radius: 8px;
+    padding: 8px 10px;
+    color: #1E293B;
+    font-size: 14px;
+}
+
+QLineEdit:focus, QComboBox:focus, QDateEdit:focus, QTimeEdit:focus {
+    border: 2px solid #3B82F6;
+}
+
+QLineEdit#footerInput {
+    background-color: transparent;
+    border: none;
+    color: #1E293B;
+    font-size: 17px;
+}
+
+QPushButton#footerSend {
+    background-color: #FFFFFF;
+    color: #1E293B;
+    border: 1px solid #CBD5E1;
+    border-radius: 8px;
+    padding: 8px 16px;
+    font-size: 15px;
+    font-weight: 700;
+}
+
+QPushButton#footerSend:hover {
+    background-color: #F1F5F9;
+}
+
+/* ================= BUTTONS ================= */
+QPushButton {
+    background-color: #E2E8F0;
+    border: 1px solid #CBD5E1;
+    border-radius: 10px;
+    padding: 8px 14px;
+    color: #1E293B;
+    font-weight: 500;
+}
+
+QPushButton:hover {
+    background-color: #CBD5E1;
+}
+
+QPushButton#primary {
+    background-color: #3B82F6;
+    border: none; color: white;
+    font-weight: 600; padding: 10px 16px;
+}
+
+QPushButton#primary:hover { background-color: #2563EB; }
+
+QPushButton#success {
+    background-color: #22C55E;
+    border: none; color: white; font-weight: 600;
+}
+
+QPushButton#success:hover { background-color: #16A34A; }
+
+QPushButton#danger {
+    background-color: #EF4444;
+    border: none; color: white; font-weight: 600;
+}
+
+QPushButton#danger:hover { background-color: #DC2626; }
+
+/* ================= TABLES ================= */
+QTableWidget {
+    background-color: #FFFFFF;
+    alternate-background-color: #F8FAFC;
+    gridline-color: #E2E8F0;
+    border: 1px solid #E2E8F0;
+    border-radius: 8px;
+    color: #1E293B;
+    font-size: 16px;
+    selection-background-color: #DBEAFE;
+    selection-color: #1E293B;
+}
+
+QTableWidget::item {
+    background-color: transparent;
+    padding: 12px;
+    border-bottom: 1px solid #E2E8F0;
+    color: #1E293B;
+}
+
+QTableWidget::item:selected {
+    background-color: #DBEAFE;
+    color: #1E3A8A;
+}
+
+QTableWidget::item:hover {
+    background-color: #F1F5F9;
+}
+
+QHeaderView::section {
+    background-color: #F8FAFC;
+    color: #64748B;
+    padding: 12px 10px;
+    border: none;
+    border-bottom: 2px solid #E2E8F0;
+    font-weight: 600;
+    font-size: 14px;
+}
+
+QTableCornerButton::section {
+    background-color: #F8FAFC;
+    border: none;
+    border-bottom: 2px solid #E2E8F0;
+}
+
+/* ================= PROGRESS BAR ================= */
+QProgressBar {
+    background-color: #E2E8F0;
+    border: 1px solid #CBD5E1;
+    border-radius: 6px;
+    text-align: center;
+    color: #1E293B;
+}
+
+QProgressBar::chunk {
+    background-color: #3B82F6;
+    border-radius: 4px;
+}
+
+/* ================= SCROLLBAR ================= */
+QScrollBar:vertical {
+    background-color: #F1F5F9;
+    width: 8px;
+}
+
+QScrollBar::handle:vertical {
+    background-color: #CBD5E1;
+    border-radius: 4px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background-color: #94A3B8;
+}
+
+/* ================= HEADER / FOOTER (light) ================= */
+QFrame#mainHeader {
+    background-color: #FFFFFF;
+    border-bottom: 1px solid #E2E8F0;
+}
+
+QFrame#mainFooter {
+    background-color: #F8FAFC;
+    border-top: 1px solid #E2E8F0;
+}
+
+QFrame#footerInputWrap {
+    background-color: #FFFFFF;
+    border: 1px solid #CBD5E1;
+    border-radius: 8px;
+}
+
+/* ================= THEME TOGGLE BUTTON ================= */
+QPushButton#themeToggleBtn {
+    background-color: #1E293B;
+    border: 1px solid #334155;
+    border-radius: 14px;
+    color: #F1F5F9;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 4px 14px;
+    min-width: 80px;
+}
+
+QPushButton#themeToggleBtn:hover {
+    background-color: #334155;
+    border-color: #64748B;
+}
+        """
+
+    def toggle_theme(self):
+        """Switch between dark and light themes"""
+        self._dark_theme = not self._dark_theme
+        if self._dark_theme:
+            self.setStyleSheet(self.get_styles())
+            self.theme_btn.setText("☀ Light")
+            self.theme_btn.setToolTip("Switch to Light Theme")
+        else:
+            self.setStyleSheet(self.get_light_styles())
+            self.theme_btn.setText("🌙 Dark")
+            self.theme_btn.setToolTip("Switch to Dark Theme")
+        if hasattr(self, 'dashboard_tab') and self.dashboard_tab:
+            self.dashboard_tab.apply_theme(self._dark_theme)
+
     def setup_ui(self):
         """Setup main UI"""
         main_widget = QWidget()
@@ -508,6 +892,7 @@ QScrollBar::handle:vertical:hover {
         # Create modular tabs
         self.dashboard_tab = DashboardTab(self.assistant, self.tts, self)
         self.tabs.addTab(self.dashboard_tab, "Dashboard")
+        self.dashboard_tab.apply_theme(self._dark_theme)
         
         self.tasks_tab = TasksTab(self.assistant, self.tts, self)
         self.tabs.addTab(self.tasks_tab, "Tasks")
@@ -528,33 +913,33 @@ QScrollBar::handle:vertical:hover {
     def create_header(self):
         """Create header with controls"""
         header = QFrame()
-        header.setStyleSheet("background-color: #0B132B; border-bottom: 1px solid #1F2937;")
+        header.setObjectName("mainHeader")
         header.setMaximumHeight(50)
-        
+
         layout = QHBoxLayout(header)
         layout.setContentsMargins(22, 8, 22, 8)
         layout.setSpacing(14)
-        
+
         title = QLabel("🤖 MILO")
         title.setObjectName("headerBrand")
         layout.addWidget(title)
-        
+
         subtitle = QLabel("Managing Information & Lifestyle Optimizer")
         subtitle.setObjectName("headerSub")
         layout.addWidget(subtitle)
-        
+
         layout.addStretch()
-        
+
         self.listen_btn = QPushButton("🎙 Start Listening")
         self.listen_btn.setObjectName("headerLink")
         self.listen_btn.clicked.connect(self.toggle_voice)
         layout.addWidget(self.listen_btn)
-        
+
         help_btn = QPushButton("❔ Help")
         help_btn.setObjectName("headerLink")
         help_btn.clicked.connect(self.show_commands_help)
         layout.addWidget(help_btn)
-        
+
         calibrate_btn = QPushButton("⚙ Calibrate")
         calibrate_btn.setObjectName("headerLink")
         calibrate_btn.clicked.connect(self.calibrate_voice)
@@ -564,17 +949,23 @@ QScrollBar::handle:vertical:hover {
         enroll_btn.setObjectName("headerLink")
         enroll_btn.clicked.connect(self.enroll_voice_profile)
         layout.addWidget(enroll_btn)
-        
+
+        self.theme_btn = QPushButton("☀ Light")
+        self.theme_btn.setObjectName("themeToggleBtn")
+        self.theme_btn.setToolTip("Switch to Light Theme")
+        self.theme_btn.clicked.connect(self.toggle_theme)
+        layout.addWidget(self.theme_btn)
+
         self.status_label = QLabel("✔ Ready")
         self.status_label.setObjectName("statusReady")
         layout.addWidget(self.status_label)
-        
+
         return header
     
     def create_footer(self):
         """Create footer with message area and input"""
         footer = QFrame()
-        footer.setStyleSheet("background-color: #111827; border-top: 1px solid #1F2937;")
+        footer.setObjectName("mainFooter")
         footer.setMaximumHeight(72)
         
         layout = QVBoxLayout(footer)
@@ -585,7 +976,7 @@ QScrollBar::handle:vertical:hover {
         self.message_area.hide()
 
         input_wrap = QFrame()
-        input_wrap.setStyleSheet("QFrame { background-color: #0B1120; border: 1px solid #334155; border-radius: 8px; }")
+        input_wrap.setObjectName("footerInputWrap")
         input_layout = QHBoxLayout(input_wrap)
         input_layout.setContentsMargins(12, 6, 8, 6)
         input_layout.setSpacing(10)
@@ -727,6 +1118,9 @@ Time: {reminder.get('datetime', 'Now')}
         """Handle voice command (runs in main thread via signal)"""
         if not text or not text.strip():
             return
+
+        if self._apply_pending_meridiem_clarification(text, source="voice"):
+            return
         
         # Update UI immediately to show we heard something
         self.update_status(f"🗣️ Processing: {text[:50]}...")
@@ -743,7 +1137,15 @@ Time: {reminder.get('datetime', 'Now')}
                 if command_id == "ADD_TASK":
                     # If spoken text already contains details, execute directly.
                     response = self.assistant.process_command(text)
-                    if response.get("intent") == "create_task" and response.get("success"):
+                    response_data = response.get("data") or {}
+                    if response_data.get("requires_clarification"):
+                        prompt = response.get("message", "Did you mean AM or PM for that time?")
+                        self._pending_clarification = response_data
+                        self.message_area.setText(prompt)
+                        self.log_command(text, prompt, "voice")
+                        if self.tts:
+                            self.tts.speak(prompt, wait=False)
+                    elif response.get("intent") == "create_task" and response.get("success"):
                         message = response.get("message", "Task added.")
                         self.message_area.setText(message)
                         self.tabs.setCurrentIndex(1)
@@ -831,22 +1233,55 @@ Time: {reminder.get('datetime', 'Now')}
     
     def process_voice_text(self, text: str):
         """Process voice text through assistant"""
+        if self._apply_pending_meridiem_clarification(text, source="voice"):
+            return
+
         self.message_area.setText(f"Processing: {text}...")
-        try:
-            response = self.assistant.process_command(text)
-            print(f"[Assistant] Intent: {response.get('intent')}, Success: {response.get('success')}")  # Debug log
-            message = response.get('message', 'Done')
-            self.message_area.setText(message)
-            
-            self.log_command(text, message, "voice")
-            self.refresh_all()
-        except Exception as e:
-            error_msg = f"Error: {str(e)}"
-            print(f"[Assistant] Error: {e}")  # Debug log
+        self._run_assistant_command_async(text, source="voice")
+
+    def _run_assistant_command_async(self, text: str, source: str):
+        """Run assistant command off the GUI thread to keep the dashboard responsive."""
+        def _worker():
+            try:
+                response = self.assistant.process_command(text)
+                self.voice_emitter.assistant_result.emit(text, response, source)
+            except Exception as e:
+                self.voice_emitter.assistant_error.emit(text, str(e), source)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _handle_async_assistant_result(self, text: str, response_obj, source: str):
+        response = response_obj or {}
+        if not isinstance(response, dict):
+            response = {}
+
+        response_data = response.get('data') or {}
+        message = response.get('message', 'Done')
+        self.message_area.setText(message)
+
+        if response_data.get('requires_clarification'):
+            self._pending_clarification = response_data
+            if self.tts and source == "voice":
+                self.tts.speak(message, wait=False)
+            self.log_command(text, message, source)
+            return
+
+        if source == "voice":
+            print(f"[Assistant] Intent: {response.get('intent')}, Success: {response.get('success')}")
+
+        self.log_command(text, message, source)
+        self.refresh_all()
+
+    def _handle_async_assistant_error(self, text: str, error: str, source: str):
+        error_msg = f"Error: {error}"
+        print(f"[Assistant] Error: {error}")
+        self.message_area.setText(error_msg)
+        self.log_command(text, error_msg, source)
+
+        if source == "voice":
             import traceback
             print(f"[Assistant] Traceback: {traceback.format_exc()}")
-            self.message_area.setText(error_msg)
-            self.log_command(text, error_msg, "voice")
+
     
     def update_status(self, message: str):
         """Update status label"""
@@ -931,6 +1366,37 @@ Time: {reminder.get('datetime', 'Now')}
             QMessageBox.warning(self, "Voice Recognition", "Voice recognition is not available.")
             return
 
+        # Enrollment needs exclusive microphone access. Pause background listening first.
+        resume_listening_after_enroll = bool(self.is_listening)
+        if resume_listening_after_enroll:
+            try:
+                self.voice_recognizer.stop_listening()
+            except Exception:
+                pass
+            self.is_listening = False
+            self.listen_btn.setText("🎙 Start Listening")
+            self.status_label.setObjectName("statusReady")
+            self.status_label.setText("✔ Ready")
+            self.status_label.style().unpolish(self.status_label)
+            self.status_label.style().polish(self.status_label)
+
+        diagnostics = None
+        if hasattr(self.voice_recognizer, "run_pre_enrollment_diagnostics"):
+            diagnostics = self.voice_recognizer.run_pre_enrollment_diagnostics(duration=1.5)
+
+        if diagnostics and not diagnostics.get("ok"):
+            proceed = QMessageBox.question(
+                self,
+                "Voice Enrollment Diagnostics",
+                f"{diagnostics.get('message', 'Microphone quality check failed.')}\n\n"
+                "Do you still want to continue enrollment?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if proceed != QMessageBox.Yes:
+                self.status_label.setText("⚠️ Enrollment canceled by diagnostics")
+                return
+
         QMessageBox.information(self, "Voice Enrollment", "You will be asked to speak a few short phrases.")
 
         progress_dialog = QProgressDialog("Preparing voice enrollment...", None, 0, 100, self)
@@ -953,11 +1419,13 @@ Time: {reminder.get('datetime', 'Now')}
             QApplication.processEvents()
 
         self.status_label.setText("🎙️ Enrolling voice...")
-        ok, message = self.voice_recognizer.enroll_speaker_profile(
-            samples=5,
-            progress_callback=update_enrollment_progress,
-        )
-        progress_dialog.close()
+        try:
+            ok, message = self.voice_recognizer.enroll_speaker_profile(
+                samples=5,
+                progress_callback=update_enrollment_progress,
+            )
+        finally:
+            progress_dialog.close()
 
         if ok:
             self.status_label.setText("✅ Voice profile enrolled")
@@ -965,6 +1433,20 @@ Time: {reminder.get('datetime', 'Now')}
         else:
             self.status_label.setText("❌ Voice enrollment failed")
             QMessageBox.warning(self, "Voice Enrollment", message)
+
+        if resume_listening_after_enroll:
+            restarted = self.voice_recognizer.start_listening(self.voice_callback)
+            self.is_listening = bool(restarted)
+            if restarted:
+                self.listen_btn.setText("◼ Stop Listening")
+                self.status_label.setObjectName("statusListening")
+                self.status_label.setText("🎙 Listening...")
+            else:
+                self.listen_btn.setText("🎙 Start Listening")
+                self.status_label.setObjectName("statusError")
+                self.status_label.setText("✖ Microphone Error")
+            self.status_label.style().unpolish(self.status_label)
+            self.status_label.style().polish(self.status_label)
 
     def prompt_voice_enrollment_if_needed(self):
         """Ask user to enroll voice profile if biometrics is available and not enrolled yet."""
@@ -1105,21 +1587,84 @@ Time: {reminder.get('datetime', 'Now')}
         text = self.input_field.text().strip()
         if not text:
             return
+
+        if self._apply_pending_meridiem_clarification(text, source="text"):
+            self.input_field.clear()
+            return
         
         self.message_area.setText(f"Processing: {text}...")
         self.input_field.clear()
-        
+        self._run_assistant_command_async(text, source="text")
+
+    def _extract_meridiem_choice(self, text: str):
+        import re
+        normalized = (text or "").strip().lower()
+        if not normalized:
+            return None
+        if re.search(r"\b(a\.?m\.?)\b", normalized):
+            return "am"
+        if re.search(r"\b(p\.?m\.?)\b", normalized):
+            return "pm"
+        return None
+
+    def _apply_pending_meridiem_clarification(self, text: str, source: str = "voice") -> bool:
+        pending = self._pending_clarification
+        if not pending or pending.get("missing_entity") != "meridiem":
+            return False
+
+        meridiem = self._extract_meridiem_choice(text)
+        if not meridiem:
+            prompt = "Please say just AM or PM so I can finish creating your task."
+            self.message_area.setText(prompt)
+            self.log_command(text, prompt, source)
+            if self.tts and source == "voice":
+                self.tts.speak(prompt, wait=False)
+            return True
+
+        title = pending.get("title") or "Untitled Task"
+        priority = pending.get("priority", "medium")
+        due_date = pending.get("proposed_date")
+
         try:
-            response = self.assistant.process_command(text)
-            response_msg = response.get('message', 'Done')
-            self.message_area.setText(response_msg)
-            
-            self.log_command(text, response_msg, "text")
-            self.refresh_all()
+            if due_date:
+                dt = datetime.datetime.strptime(due_date, "%Y-%m-%d %H:%M:%S")
+                hour = dt.hour
+                if meridiem == "am":
+                    if hour >= 12:
+                        hour -= 12
+                elif meridiem == "pm":
+                    if hour < 12:
+                        hour += 12
+                dt = dt.replace(hour=hour)
+                due_date = dt.strftime("%Y-%m-%d %H:%M:%S")
+
+            result = self.assistant.task_manager.create_task(
+                title=title,
+                due_date=due_date,
+                priority=priority,
+            )
+
+            if result.get("success"):
+                date_info = f" for {due_date}" if due_date else ""
+                message = f"OK, I've added '{title}'{date_info}."
+                self._pending_clarification = None
+                self.message_area.setText(message)
+                self.log_command(text, message, source)
+                if self.tts and source == "voice":
+                    self.tts.speak(message, wait=False)
+                self.refresh_all()
+            else:
+                message = result.get("message", "I couldn't create that task.")
+                self.message_area.setText(message)
+                self.log_command(text, message, source)
+                if self.tts and source == "voice":
+                    self.tts.speak(message, wait=False)
         except Exception as e:
-            error_msg = f"Error: {str(e)}"
-            self.message_area.setText(error_msg)
-            self.log_command(text, error_msg, "text")
+            message = f"Unable to apply AM or PM clarification: {e}"
+            self.message_area.setText(message)
+            self.log_command(text, message, source)
+
+        return True
     
     def refresh_all(self):
         """Refresh all data"""
