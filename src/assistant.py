@@ -78,6 +78,19 @@ class MILOAssistant:
                 title = entities.get('title', 'Untitled Task')
                 priority = entities.get('priority', 'medium')
                 due_date = entities.get('date')
+
+                # Defensive clarification loop: do not save when a critical entity is ambiguous.
+                if entities.get('missing_entity') == 'meridiem':
+                    response['message'] = entities.get('clarification_prompt') or "Did you mean AM or PM for that time?"
+                    response['success'] = False
+                    response['data'] = {
+                        'requires_clarification': True,
+                        'missing_entity': 'meridiem',
+                        'title': title,
+                        'priority': priority,
+                        'proposed_date': due_date,
+                    }
+                    return response
                 
                 result = self.task_manager.create_task(
                     title=title,

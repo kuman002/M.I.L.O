@@ -38,11 +38,19 @@ try:
 except ImportError:
     torch = None
 
+try:
+    import noisereduce as nr
+    NOISEREDUCE_AVAILABLE = True
+except Exception:
+    nr = None
+    NOISEREDUCE_AVAILABLE = False
+
 
 # ---------------------------------------------------------------------------
 # Pre-compiled phonetic replacement rules (Indian-English accent)
 # ---------------------------------------------------------------------------
 _INDIAN_ENGLISH_REGEX_MAP: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"\b(pay my low|hey my low|pe my low|pay milo)\b"),                    "hey milo"),
     (re.compile(r"\b(google|gugel|gugle)\b"),                                             "google"),
     (re.compile(r"\b(remindar|remainder|remeender)\b"),                                   "reminder"),
     (re.compile(r"\b(expence|expans|expenses)\b"),                                        "expense"),
@@ -161,6 +169,7 @@ class VoiceRecognizer:
         self.batched_model = None
         self.language = language
         self.is_listening = False
+        self._enrollment_active = False
         self._stop_event = threading.Event()
         self._last_calibration_ts = 0.0
         self.initial_prompt = (
@@ -180,6 +189,8 @@ class VoiceRecognizer:
         self.listen_phrase_time_limit = float(os.getenv("MILO_LISTEN_PHRASE_LIMIT", "10.0"))
         self.listen_timeout_bg = float(os.getenv("MILO_LISTEN_TIMEOUT_BG", "1.8"))
         self.listen_timeout_once = float(os.getenv("MILO_LISTEN_TIMEOUT_ONCE", "6.0"))
+        self.enable_audio_preprocess = os.getenv("MILO_AUDIO_PREPROCESS", "1").strip().lower() not in {"0", "false", "no"}
+        self.enable_noise_reduce = os.getenv("MILO_AUDIO_DENOISE", "1").strip().lower() not in {"0", "false", "no"}
 
         # Acoustic tuning
         rec = sr.Recognizer()
@@ -197,7 +208,10 @@ class VoiceRecognizer:
             try:
                 from importlib import import_module
                 mod = import_module(module_path)
-                self.voice_biometrics = mod.VoiceBiometrics()
+                verifier_cls = getattr(mod, "EagleSpeakerVerifier", None) or getattr(mod, "VoiceBiometrics", None)
+                if verifier_cls is None:
+                    continue
+                self.voice_biometrics = verifier_cls()
                 break
             except Exception:
                 continue
@@ -301,6 +315,7 @@ class VoiceRecognizer:
                 convert_rate=self.SAMPLE_RATE, convert_width=self.SAMPLE_WIDTH
             )
             audio_np = np.frombuffer(wav_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+            audio_np = self._preprocess_audio_signal(audio_np)
 
             # Too short
             if audio_np.size < int(0.35 * self.SAMPLE_RATE):
@@ -349,6 +364,35 @@ class VoiceRecognizer:
         except Exception as e:
             print(f"❌ Transcription Error: {e}")
             return {"text": "", "success": False}
+
+    def _preprocess_audio_signal(self, audio_np: np.ndarray) -> np.ndarray:
+        """Apply lightweight denoise and normalization before transcription."""
+        if not self.enable_audio_preprocess or audio_np.size == 0:
+            return audio_np
+
+        signal = np.asarray(audio_np, dtype=np.float32).copy()
+
+        # Remove DC bias and normalize amplitude to stabilize recognition.
+        signal -= float(np.mean(signal))
+        peak = float(np.max(np.abs(signal))) if signal.size else 0.0
+        if peak > 1e-6:
+            signal /= peak
+
+        # Estimate floor from earliest slice and gate low-energy hiss.
+        floor_slice = signal[: max(1, int(0.15 * self.SAMPLE_RATE))]
+        noise_floor = float(np.sqrt(np.mean(np.square(floor_slice)))) if floor_slice.size else 0.0
+        gate = max(0.0035, noise_floor * 2.2)
+        signal[np.abs(signal) < gate] *= 0.25
+
+        # Optional spectral denoise when dependency is available.
+        if self.enable_noise_reduce and NOISEREDUCE_AVAILABLE and signal.size > int(0.5 * self.SAMPLE_RATE):
+            try:
+                signal = nr.reduce_noise(y=signal, sr=self.SAMPLE_RATE, stationary=True, prop_decrease=0.85)
+                signal = np.asarray(signal, dtype=np.float32)
+            except Exception:
+                pass
+
+        return signal
 
     # ------------------------------------------------------------------
     # Command detection
@@ -451,6 +495,48 @@ class VoiceRecognizer:
             print(f"[Voice] Noise calibration failed: {e}")
             return False
 
+    def run_pre_enrollment_diagnostics(self, duration: float = 1.5) -> Dict[str, Any]:
+        """Capture a short mic sample and report signal quality before enrollment."""
+        metrics: Dict[str, Any] = {
+            "ok": False,
+            "rms": 0.0,
+            "peak": 0.0,
+            "clipping_ratio": 0.0,
+            "message": "",
+        }
+        try:
+            with sr.Microphone(sample_rate=self.SAMPLE_RATE) as source:
+                self.recognizer.adjust_for_ambient_noise(source, duration=0.4)
+                audio_data = self.recognizer.record(source, duration=max(0.8, float(duration)))
+
+            raw = audio_data.get_raw_data(convert_rate=self.SAMPLE_RATE, convert_width=2)
+            sample = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
+            if sample.size == 0:
+                metrics["message"] = "No audio captured. Check microphone permissions and device selection."
+                return metrics
+
+            norm = sample / 32768.0
+            rms = float(np.sqrt(np.mean(np.square(norm))))
+            peak = float(np.max(np.abs(norm)))
+            clipping_ratio = float(np.mean(np.abs(norm) >= 0.98))
+
+            metrics.update({"rms": rms, "peak": peak, "clipping_ratio": clipping_ratio})
+
+            if rms < 0.01:
+                metrics["message"] = "Microphone input is too quiet. Move closer and speak louder."
+            elif clipping_ratio > 0.08:
+                metrics["message"] = "Audio is clipping. Reduce microphone gain or speak farther from the mic."
+            elif peak < 0.12:
+                metrics["message"] = "Signal is weak. Try a quieter room and keep mic closer."
+            else:
+                metrics["ok"] = True
+                metrics["message"] = "Microphone diagnostics passed."
+
+            return metrics
+        except Exception as e:
+            metrics["message"] = f"Diagnostics failed: {e}"
+            return metrics
+
     # ------------------------------------------------------------------
     # Speaker enrollment
     # ------------------------------------------------------------------
@@ -473,9 +559,11 @@ class VoiceRecognizer:
         target_samples = max(6, int(samples))
         collected      = 0
         attempts       = 0
-        max_attempts   = max(18, target_samples * 4)
+        max_attempts   = max(28, target_samples * 8)
         best_percent   = 0.0
         last_feedback  = ""
+        invalid_streak = 0
+        invalid_total  = 0
 
         # Reset profiler if supported
         try:
@@ -484,6 +572,7 @@ class VoiceRecognizer:
         except Exception:
             pass
 
+        self._enrollment_active = True
         try:
             with sr.Microphone(sample_rate=vb.sample_rate) as source:
                 try:
@@ -492,6 +581,8 @@ class VoiceRecognizer:
                 except Exception:
                     pass
 
+                min_voice_level = max(55.0, float(self.recognizer.energy_threshold) * 0.18)
+
                 while collected < target_samples and attempts < max_attempts:
                     attempts += 1
                     print(f"[Voice] Enrollment sample {collected + 1}/{target_samples} - please speak...")
@@ -499,17 +590,35 @@ class VoiceRecognizer:
                         progress_callback(collected + 1, target_samples, best_percent)
 
                     try:
-                        audio_data = self.recognizer.record(source, duration=4.0)
+                        # Use fixed-duration capture to avoid Eagle feedback like AUDIO_TOO_SHORT
+                        # when phrase-based listening ends too early.
+                        audio_data = self.recognizer.record(source, duration=4.2)
                     except sr.WaitTimeoutError:
                         continue
 
                     raw_audio = audio_data.get_raw_data(convert_rate=vb.sample_rate, convert_width=2)
                     if not raw_audio or len(raw_audio) < vb.frame_length * 2 * 8:
+                        last_feedback = "AUDIO_TOO_SHORT"
+                        invalid_streak += 1
+                        invalid_total += 1
+                        if invalid_streak >= 10:
+                            return False, (
+                                "Enrollment failed: audio is repeatedly too short. "
+                                "Hold the mic 8-12 cm away and speak one full sentence for 4 seconds."
+                            )
                         continue
 
                     audio_np = np.frombuffer(raw_audio, dtype=np.int16)
-                    if audio_np.size == 0 or float(np.mean(np.abs(audio_np))) < 250.0:
+                    mean_abs = float(np.mean(np.abs(audio_np))) if audio_np.size else 0.0
+                    if audio_np.size == 0 or mean_abs < min_voice_level:
                         last_feedback = "No clear voice detected"
+                        invalid_streak += 1
+                        invalid_total += 1
+                        if invalid_streak >= 10:
+                            return False, (
+                                "Enrollment failed: no clear voice detected repeatedly. "
+                                "Increase mic input level and speak continuously for each sample."
+                            )
                         continue
 
                     result = vb.enroll_audio_bytes(raw_audio, include_feedback=True)
@@ -519,12 +628,36 @@ class VoiceRecognizer:
                         percent, feedback = result, ""
 
                     if percent is None:
+                        if feedback:
+                            last_feedback = feedback
+                        invalid_streak += 1
+                        invalid_total += 1
+                        if invalid_streak >= 10:
+                            return False, (
+                                "Enrollment did not receive usable voice frames. "
+                                "Please verify microphone permissions and try again in a quieter room."
+                            )
                         continue
 
                     if feedback:
                         last_feedback = feedback
 
-                    best_percent = max(best_percent, float(percent))
+                    normalized_feedback = str(feedback or "").upper()
+                    current_percent = float(percent)
+                    if ("TOO_SHORT" in normalized_feedback or "NO_VOICE" in normalized_feedback) and current_percent <= best_percent:
+                        invalid_streak += 1
+                        invalid_total += 1
+                        print(f"[Voice] Enrollment feedback: {normalized_feedback} (retry)")
+                        if invalid_streak >= 10:
+                            return False, (
+                                f"Enrollment kept receiving invalid audio ({last_feedback or normalized_feedback}). "
+                                "Try speaking louder and continuously for the whole sample."
+                            )
+                        continue
+
+                    invalid_streak = 0
+
+                    best_percent = max(best_percent, current_percent)
                     collected   += 1
 
                     if progress_callback:
@@ -538,11 +671,13 @@ class VoiceRecognizer:
 
             hint = f" Last feedback: {last_feedback}." if last_feedback else ""
             return False, (
-                f"Could not complete enrollment (reached {best_percent:.0f}%).{hint} "
-                "Keep microphone close and speak continuously for 4 seconds per sample."
+                f"Could not complete enrollment (reached {best_percent:.0f}% after {attempts} attempts, {invalid_total} invalid).{hint} "
+                "Keep microphone close and speak continuously for the full sample; avoid long pauses between words."
             )
         except Exception as e:
             return False, f"Voice enrollment failed: {e}"
+        finally:
+            self._enrollment_active = False
 
     # ------------------------------------------------------------------
     # Speaker verification
@@ -651,6 +786,10 @@ class VoiceRecognizer:
                         print(f"⚠️ Mic calibration warning: {e}")
 
                     while self.is_listening and not self._stop_event.is_set():
+                        if self._enrollment_active:
+                            time.sleep(0.15)
+                            continue
+
                         try:
                             self._maybe_recalibrate(source, min_interval_sec=45.0)
                             audio_data = self.recognizer.listen(

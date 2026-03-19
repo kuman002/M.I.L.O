@@ -188,16 +188,37 @@ QScrollBar::handle:vertical:hover {
     background: #475569;
 }
 
-/* Dashboard Cards */
-QLabel#card_title {
+/* Dashboard KPI Cards */
+QLabel#kpiCardTitle {
     color: #94a3b8;
     font-size: 11px;
-    text-transform: uppercase;
-    font-weight: 800;
-    letter-spacing: 1px;
+    font-weight: 600;
 }
 
-QLabel#card_value {
+QLabel#kpiCardValue {
+    color: #f1f5f9;
+    font-size: 40px;
+    font-weight: 700;
+}
+
+/* Section Card Header Title */
+QLabel#sectionCardTitle {
+    color: #f1f5f9;
+    font-size: 13px;
+    font-weight: 700;
+}
+
+/* Section Card Body */
+QLabel#sectionCardBody {
+    color: #cbd5e1;
+    font-size: 13px;
+}
+
+QLabel#sectionCardBodyTerminal {
+    color: #86efac;
+    font-size: 13px;
+    font-family: 'Consolas', 'Courier New', monospace;
+}
     color: #ffffff;
     font-size: 28px;
     font-weight: bold;
